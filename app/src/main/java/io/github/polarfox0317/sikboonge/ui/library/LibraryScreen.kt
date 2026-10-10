@@ -21,6 +21,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -34,8 +35,11 @@ import io.github.polarfox0317.sikboonge.PlayerArtwork
 import io.github.polarfox0317.sikboonge.R
 import io.github.polarfox0317.sikboonge.TransientErrorBanner
 import io.github.polarfox0317.sikboonge.UserFacingErrors
+import io.github.polarfox0317.sikboonge.AudioResult
+import io.github.polarfox0317.sikboonge.LibraryDownload
 import io.github.polarfox0317.sikboonge.canonicalAudioPath
 import io.github.polarfox0317.sikboonge.ui.components.ConfirmDeleteDialog
+import io.github.polarfox0317.sikboonge.ui.components.DownloadProgressCard
 import io.github.polarfox0317.sikboonge.ui.components.EmptyState
 import io.github.polarfox0317.sikboonge.ui.components.ListControls
 import io.github.polarfox0317.sikboonge.ui.components.MediaCard
@@ -47,12 +51,17 @@ import io.github.polarfox0317.sikboonge.ui.components.ScrollJumpBubbles
 import io.github.polarfox0317.sikboonge.ui.state.AppActions
 import io.github.polarfox0317.sikboonge.ui.state.AppUiState
 import io.github.polarfox0317.sikboonge.ui.state.Destination
+import io.github.polarfox0317.sikboonge.ui.state.DateRange
 import io.github.polarfox0317.sikboonge.ui.state.ListLayout
 import io.github.polarfox0317.sikboonge.ui.state.ListQuery
+import io.github.polarfox0317.sikboonge.ui.state.SortKey
 import io.github.polarfox0317.sikboonge.ui.theme.AppDimens
 import io.github.polarfox0317.sikboonge.ui.theme.WindowTier
 import java.text.DateFormat
+import java.text.Collator
+import java.text.Normalizer
 import java.util.Date
+import java.util.Locale
 
 @Composable
 internal fun LibraryScreen(
@@ -82,6 +91,23 @@ internal fun LibraryScreen(
         ListLayout.List -> AppDimens.minimumGridColumnWidth(fontScale)
         ListLayout.Grid -> AppDimens.minimumTileWidth(fontScale)
     }
+    val allLibraryRows = remember(state.history, state.downloads) {
+        buildList {
+            state.history.forEach { add(LibraryRow.Completed(it)) }
+            state.downloads.forEach { add(LibraryRow.Pending(it)) }
+        }
+    }
+    val visibleLibraryRows = remember(allLibraryRows, state.visibleHistory, state.libraryQuery) {
+        val visibleCompletedPaths = state.visibleHistory.mapTo(hashSetOf()) { it.path }
+        val terms = normalizedSearchTerms(state.libraryQuery.text)
+        val nowMs = System.currentTimeMillis()
+        allLibraryRows.filter { row ->
+            when (row) {
+                is LibraryRow.Completed -> row.result.path in visibleCompletedPaths
+                is LibraryRow.Pending -> matchesPendingDownload(row.download, terms, state.libraryQuery.range, nowMs)
+            }
+        }.sortLibraryRows(state.libraryQuery.sortKey, state.libraryQuery.ascending)
+    }
     Box(modifier.fillMaxSize().consumeWindowInsets(contentPadding)) {
         LazyVerticalGrid(
         columns = GridCells.Adaptive(minimumColumnWidth),
@@ -91,7 +117,7 @@ internal fun LibraryScreen(
         horizontalArrangement = Arrangement.spacedBy(AppDimens.itemSpacing),
         verticalArrangement = Arrangement.spacedBy(AppDimens.itemSpacing),
     ) {
-        if (state.history.isNotEmpty()) {
+        if (allLibraryRows.isNotEmpty()) {
             item(key = "listControls", span = { GridItemSpan(maxLineSpan) }) {
                 ListControls(
                     query = state.libraryQuery,
@@ -104,7 +130,7 @@ internal fun LibraryScreen(
                 )
             }
         }
-        if (state.history.isEmpty()) {
+        if (allLibraryRows.isEmpty()) {
             item(key = "library_empty", span = { GridItemSpan(maxLineSpan) }) {
                 EmptyState(
                     title = "\uC544\uC9C1 \uBCF4\uAD00\uD55C \uC624\uB514\uC624\uAC00 \uC5C6\uC5B4\uC694.",
@@ -115,7 +141,7 @@ internal fun LibraryScreen(
                 )
             }
         }
-        if (state.history.isNotEmpty() && state.visibleHistory.isEmpty()) {
+        if (allLibraryRows.isNotEmpty() && visibleLibraryRows.isEmpty()) {
             item(key = "library_no_results", span = { GridItemSpan(maxLineSpan) }) {
                 Column(
                     modifier = Modifier.fillMaxWidth().testTag("libraryNoResults"),
@@ -129,11 +155,25 @@ internal fun LibraryScreen(
                 }
             }
         }
-        items(state.visibleHistory, key = { it.path }) { result ->
+        items(visibleLibraryRows, key = { it.stableKey }) { row ->
+            when (row) {
+                is LibraryRow.Pending -> DownloadProgressCard(
+                    download = row.download,
+                    onCancel = actions::onCancelDownload,
+                    useGridTile = state.libraryLayout == ListLayout.Grid,
+                    modifier = Modifier.animateItem()
+                        .fillMaxWidth()
+                        .testTag("libraryDownload_${row.download.id}"),
+                )
+                is LibraryRow.Completed -> {
+            val result = row.result
             val current = state.stream.localAudioPath?.let(::canonicalAudioPath) == canonicalAudioPath(result.path)
             val playing = current && state.stream.playing
             val playLabel = if (playing) "\uC77C\uC2DC\uC815\uC9C0" else if (current && state.stream.ended) "\uCC98\uC74C\uBD80\uD130 \uB4E3\uAE30" else "\uB4E3\uAE30"
-            Column(verticalArrangement = Arrangement.spacedBy(AppDimens.itemSpacing)) {
+            Column(
+                modifier = Modifier.animateItem(),
+                verticalArrangement = Arrangement.spacedBy(AppDimens.itemSpacing),
+            ) {
                 val itemModifier = Modifier.fillMaxWidth()
                     .testTag(if (state.selectionMode) "librarySelect_${result.name}" else "libraryResult_${result.name}")
                     .semantics { if (state.selectionMode) contentDescription = "\uC624\uB514\uC624 \uC120\uD0DD: ${result.name}" }
@@ -194,6 +234,8 @@ internal fun LibraryScreen(
                     TransientErrorBanner(state.stream.error, UserFacingErrors.Context.LOCAL_MEDIA, testTag = "localPlaybackError")
                 }
             }
+                }
+            }
         }
         }
         ScrollJumpBubbles(
@@ -223,3 +265,65 @@ internal fun LibraryScreen(
         )
     }
 }
+
+private sealed interface LibraryRow {
+    val stableKey: String
+
+    data class Completed(val result: AudioResult) : LibraryRow {
+        override val stableKey: String = "library-audio:${result.path}"
+    }
+
+    data class Pending(val download: LibraryDownload) : LibraryRow {
+        override val stableKey: String = "library-download:${download.id}"
+    }
+}
+
+private fun normalizedSearchTerms(value: String): List<String> =
+    Normalizer.normalize(value, Normalizer.Form.NFC)
+        .lowercase(Locale.ROOT)
+        .trim()
+        .split(Regex("[\\s\\p{Z}]+"))
+        .filter(String::isNotEmpty)
+
+private fun matchesPendingDownload(
+    download: LibraryDownload,
+    terms: List<String>,
+    range: DateRange,
+    nowMs: Long,
+): Boolean {
+    val normalizedName = Normalizer.normalize(download.name, Normalizer.Form.NFC)
+        .lowercase(Locale.ROOT)
+    if (!terms.all(normalizedName::contains)) return false
+    return when (range) {
+        DateRange.All -> true
+        DateRange.Week -> download.date in (nowMs - 7L * 86_400_000L)..nowMs
+        DateRange.Month -> download.date in (nowMs - 30L * 86_400_000L)..nowMs
+    }
+}
+
+private fun List<LibraryRow>.sortLibraryRows(sortKey: SortKey, ascending: Boolean): List<LibraryRow> =
+    when (sortKey) {
+        SortKey.Date -> if (ascending) sortedBy { it.date } else sortedByDescending { it.date }
+        SortKey.Name -> {
+            val collator = Collator.getInstance(Locale.KOREAN)
+            val comparator = Comparator<LibraryRow> { first, second ->
+                collator.compare(
+                    Normalizer.normalize(first.name, Normalizer.Form.NFC),
+                    Normalizer.normalize(second.name, Normalizer.Form.NFC),
+                )
+            }
+            sortedWith(if (ascending) comparator else comparator.reversed())
+        }
+    }
+
+private val LibraryRow.name: String
+    get() = when (this) {
+        is LibraryRow.Completed -> result.name
+        is LibraryRow.Pending -> download.name
+    }
+
+private val LibraryRow.date: Long
+    get() = when (this) {
+        is LibraryRow.Completed -> result.date
+        is LibraryRow.Pending -> download.date
+    }

@@ -1,3 +1,22 @@
 <resources>
     <string name="app_name">싴붕이</string>
+    <string name="update_dialog_title">새 버전이 있어요</string>
+    <string name="update_version_transition">%1$s → %2$s</string>
+    <string name="update_version_name">버전 %1$s</string>
+    <string name="update_completed_title">업데이트했어요</string>
+    <string name="update_action">업데이트</string>
+    <string name="update_later">나중에</string>
+    <string name="update_skip_version">이 버전 건너뛰기</string>
+    <string name="update_full_release">GitHub에서 전체 변경 내역 보기</string>
+    <string name="update_confirm">확인</string>
+    <string name="update_notes_empty">변경 내역이 없어요.</string>
+    <string name="changelog_1_0_2_downloads_heading">다운로드 알림 개선</string>
+    <string name="changelog_1_0_2_downloads_library">다운로드 중인 오디오를 보관함 목록에서 확인할 수 있어요.</string>
+    <string name="changelog_1_0_2_downloads_metrics">진행률, 다운로드 속도, 예상 남은 시간을 보관함과 시스템 알림에 표시해요.</string>
+    <string name="changelog_1_0_2_downloads_cancel">보관함과 시스템 알림에서 다운로드를 중지할 수 있어요.</string>
+    <string name="changelog_1_0_2_downloads_complete">다운로드가 완료되면 시스템 알림으로 알려줘요.</string>
+    <string name="changelog_1_0_2_updates_heading">업데이트 안내 개선</string>
+    <string name="changelog_1_0_2_updates_language">언어에 맞는 변경사항을 목록으로 정리해 읽기 편하게 개선했어요.</string>
+    <string name="settings_update_progress">%1$d%%</string>
+    <string name="settings_update_received">%1$s 받음</string>
 </resources>

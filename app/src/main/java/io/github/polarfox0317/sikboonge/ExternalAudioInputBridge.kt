@@ -15,7 +15,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 /** Serves seekable ranges to FFmpeg over loopback without staging the source video. */
 internal class ExternalAudioInputBridge private constructor(
     private val source: Source,
-    private val onBytesTransferred: ((Long, Long?) -> Unit)? = null,
+    private val onBytesTransferred: ((Long, Long, Long?) -> Unit)? = null,
 ) : AutoCloseable {
     private val server = ServerSocket(0, 4, InetAddress.getByName("127.0.0.1"))
     private val route = "/${newOpaqueToken()}"
@@ -34,7 +34,11 @@ internal class ExternalAudioInputBridge private constructor(
         failure()?.let { throw it }
         try {
             val verifiedBytes = source.verifyComplete(cancelled)
-            if (verifiedBytes > 0L) runCatching { onBytesTransferred?.invoke(verifiedBytes, source.size()) }
+            if (verifiedBytes > 0L) runCatching {
+                val totalBytes = source.size()
+                val startByte = totalBytes?.minus(verifiedBytes)?.coerceAtLeast(0L) ?: 0L
+                onBytesTransferred?.invoke(startByte, verifiedBytes, totalBytes)
+            }
         } catch (error: IncompleteMediaInputException) {
             firstFailure.compareAndSet(null, error)
             throw firstFailure.get() ?: error
@@ -76,6 +80,8 @@ internal class ExternalAudioInputBridge private constructor(
                 return
             }
             val response = source.open(request[0], range)
+            val rangeStart = response.headers["Content-Range"]
+                ?.substringAfter("bytes ")?.substringBefore('-')?.toLongOrNull() ?: 0L
             val out = socket.getOutputStream()
             val headersText = StringBuilder("HTTP/1.1 ${response.status} ${response.reason}\r\nConnection: close\r\nAccept-Ranges: bytes\r\n")
             response.headers.forEach { (name, value) -> headersText.append(name).append(": ").append(value).append("\r\n") }
@@ -106,8 +112,8 @@ internal class ExternalAudioInputBridge private constructor(
                     }
                     if (count == 0) continue
                     receivedBytes += count
-                    runCatching { onBytesTransferred?.invoke(count.toLong(), totalBytes) }
                     out.write(buffer, 0, count)
+                    runCatching { onBytesTransferred?.invoke(rangeStart + receivedBytes - count, count.toLong(), totalBytes) }
                 }
             }
             out.flush()
@@ -279,7 +285,7 @@ internal class ExternalAudioInputBridge private constructor(
             fileId: Int,
             listedSize: Long,
             access: TdlibFileAccess,
-            onBytesTransferred: ((Long, Long?) -> Unit)? = null,
+            onBytesTransferred: ((Long, Long, Long?) -> Unit)? = null,
         ): ExternalAudioInputBridge {
             require(fileId > 0)
             return ExternalAudioInputBridge(BotSource(fileId, listedSize.coerceAtLeast(0L), access), onBytesTransferred)

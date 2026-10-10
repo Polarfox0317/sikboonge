@@ -27,7 +27,7 @@ class BotBodyPolicyTest {
                 connected = false,
                 setupComplete = false,
                 paired = false,
-                setupRequested = true,
+                setupRequested = false,
             ),
         )
     }
@@ -47,9 +47,9 @@ class BotBodyPolicyTest {
     }
 
     @Test
-    fun aConnectedBotShowsItsInboxBeforeThePrivateChatIsPairedEvenWithAStaleSetupRequest() {
+    fun aConnectedButUnpairedBotKeepsTheSetupPageForAccountPairing() {
         assertEquals(
-            BotBody.Inbox,
+            BotBody.Setup,
             BotBodyPolicy.resolve(
                 initialStateLoaded = true,
                 connected = true,
@@ -61,15 +61,16 @@ class BotBodyPolicyTest {
     }
 
     @Test
-    fun anUnpairedConfiguredBotShowsPairing() {
+    fun cachedVideosKeepTheInboxAvailableDuringConnectionFailures() {
         assertEquals(
-            BotBody.Pairing,
+            BotBody.Inbox,
             BotBodyPolicy.resolve(
                 initialStateLoaded = true,
                 connected = false,
-                setupComplete = true,
+                setupComplete = false,
                 paired = false,
                 setupRequested = false,
+                hasCachedVideos = true,
             ),
         )
     }

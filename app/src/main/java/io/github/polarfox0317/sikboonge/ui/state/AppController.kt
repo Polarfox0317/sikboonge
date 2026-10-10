@@ -25,6 +25,7 @@ import io.github.polarfox0317.sikboonge.BotVideo
 import io.github.polarfox0317.sikboonge.ConversionService
 import io.github.polarfox0317.sikboonge.ConversionState
 import io.github.polarfox0317.sikboonge.ExternalPlayback
+import io.github.polarfox0317.sikboonge.LibraryDownload
 import io.github.polarfox0317.sikboonge.PlaybackSource
 import io.github.polarfox0317.sikboonge.LocalPlaybackPolicy
 import io.github.polarfox0317.sikboonge.StreamPlayback
@@ -74,19 +75,32 @@ class AppController(
     private var lastPlayerSourceKey = sourceKey(StreamPlayback.state.value)
     private var hostWasBound = false
     private var selectedVideoGeneration = 0L
+    private var pendingConversionUri: String? = null
     private var preservePlayerSizeSourceKey: String? = null
     private var preservePlayerSizeBotQueueKey: String? = null
     private var lastAnnouncedBotSaveCompletionId = AppStore.state.value.botSaveCompletionId
+    private var lastAnnouncedDownloadCancellationId = AppStore.cancelledDownloadId.value
+    private val pendingNotificationPermissionActions = mutableListOf<(Boolean) -> Unit>()
+    private var notificationPermissionRequestInFlight = false
 
     val actions: AppActions = this
     val messages: SharedFlow<UiMessage> = mutableMessages.asSharedFlow()
+    private val libraryRows = combine(AppStore.history, AppStore.downloads) { history, downloads ->
+        history to downloads
+    }
     val uiState: StateFlow<AppUiState> = combine(
-        interaction, AppStore.state, AppStore.history, StreamPlayback.state, botState,
-    ) { input, conversion, history, stream, bot ->
-        input.snapshot(conversion, history, stream, bot)
+        interaction, AppStore.state, libraryRows, StreamPlayback.state, botState,
+    ) { input, conversion, library, stream, bot ->
+        input.snapshot(conversion, library.first, library.second, stream, bot)
     }.stateIn(
         controllerScope, SharingStarted.Eagerly,
-        interaction.value.snapshot(AppStore.state.value, AppStore.history.value, StreamPlayback.state.value, botState.value),
+        interaction.value.snapshot(
+            AppStore.state.value,
+            AppStore.history.value,
+            AppStore.downloads.value,
+            StreamPlayback.state.value,
+            botState.value,
+        ),
     )
 
     init {
@@ -185,6 +199,14 @@ class AppController(
                         notice("오디오를 보관함에 저장했어요.")
                     }
                 }
+        }
+        controllerScope.launch {
+            AppStore.cancelledDownloadId.collect { downloadId ->
+                if (downloadId != null && downloadId != lastAnnouncedDownloadCancellationId) {
+                    lastAnnouncedDownloadCancellationId = downloadId
+                    notice("다운로드를 중지했어요.")
+                }
+            }
         }
     }
 
@@ -395,10 +417,17 @@ class AppController(
     override fun onExtractVideo() {
         val input = interaction.value
         val uri = input.videoUri ?: return
+        if (pendingConversionUri != null || AppStore.state.value.running) return
+        pendingConversionUri = uri
         val request = conversionIntent(input.saveFormat).putExtra("uri", uri)
         request.clipData = ClipData.newRawUri("영상", Uri.parse(uri))
         request.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        startConversion(request, "추출 준비 중", "추출을 시작하지 못했어요. 앱을 다시 열고 시도해 주세요.")
+        onRequestNotificationPermissionThen {
+            if (pendingConversionUri != uri) return@onRequestNotificationPermissionThen
+            pendingConversionUri = null
+            if (interaction.value.videoUri != uri || AppStore.state.value.running) return@onRequestNotificationPermissionThen
+            startConversion(request, "추출 준비 중", "추출을 시작하지 못했어요. 앱을 다시 열고 시도해 주세요.")
+        }
     }
 
     override fun onSaveFormatChanged(value: AudioFormat) {
@@ -439,8 +468,46 @@ class AppController(
     }
 
     override fun onCancelConversion() { appContext.startService(Intent(appContext, ConversionService::class.java).setAction("cancel")) }
-    override fun onRequestNotificationPermission() { hostEffects?.requestNotificationPermission() }
-    override fun onNotificationPermissionResult(allowed: Boolean) { interaction.update { it.copy(notificationsAllowed = allowed) } }
+    override fun onCancelDownload(id: Long) {
+        appContext.startService(
+            Intent(appContext, ConversionService::class.java)
+                .setAction(ConversionService.ACTION_CANCEL_DOWNLOAD)
+                .putExtra(ConversionService.EXTRA_DOWNLOAD_ID, id),
+        )
+    }
+    override fun onRequestNotificationPermission() {
+        if (notificationsAllowed()) {
+            onNotificationPermissionResult(true)
+        } else {
+            val effects = hostEffects
+            if (effects == null) {
+                onNotificationPermissionResult(false)
+            } else if (!notificationPermissionRequestInFlight) {
+                notificationPermissionRequestInFlight = true
+                runCatching(effects::requestNotificationPermission)
+                    .onFailure { onNotificationPermissionResult(false) }
+            }
+        }
+    }
+    override fun onRequestNotificationPermissionThen(onResult: (Boolean) -> Unit) {
+        if (notificationsAllowed()) {
+            interaction.update { it.copy(notificationsAllowed = true) }
+            onResult(true)
+            return
+        }
+        pendingNotificationPermissionActions += onResult
+        onRequestNotificationPermission()
+    }
+    override fun onNotificationPermissionResult(allowed: Boolean) {
+        notificationPermissionRequestInFlight = false
+        interaction.update { it.copy(notificationsAllowed = allowed) }
+        val pending = pendingNotificationPermissionActions.toList()
+        pendingNotificationPermissionActions.clear()
+        pending.forEach { action -> action(allowed) }
+        if (pending.isNotEmpty() && !allowed) {
+            notice("알림 권한이 꺼져 있어 진행 알림은 표시되지 않아요. 앱 정보 > 알림에서 허용할 수 있어요. 작업은 계속 진행할게요.")
+        }
+    }
 
     override fun onSaveAudioToDevice(result: AudioResult) {
         if (interaction.value.saving || interaction.value.renamingAudioPath != null || interaction.value.pendingSaveResult != null) return
@@ -737,7 +804,9 @@ class AppController(
         BotRuntime.disconnect(appContext)
         onTopLevelSelected(Destination.Bot)
     }
-    override fun onPairBot() = BotRuntime.pair(appContext)
+    override fun onPairBot() {
+        BotRuntime.pair(appContext)?.let(::onOpenExternalUrl)
+    }
     override fun onRefreshBot() {
         val bot = botState.value
         if (interaction.value.destination == Destination.Bot && bot.connected && bot.paired && !bot.busy && !bot.refreshing) BotRuntime.refreshInbox(appContext)
@@ -745,8 +814,14 @@ class AppController(
     override fun onSaveBotVideo(video: BotVideo, format: AudioFormat) {
         if (!canUseBotVideo(video) || AppStore.state.value.running || interaction.value.preparingBotSaveMessageId != null) return
         interaction.update { it.copy(preparingBotSaveMessageId = video.messageId) }
-        notice("보관함에 저장할 오디오를 준비하고 있어요.")
-        BotRuntime.save(appContext, video, interaction.value.saveFormat.name)
+        onRequestNotificationPermissionThen {
+            if (!canUseBotVideo(video)) {
+                interaction.update { it.copy(preparingBotSaveMessageId = null) }
+                return@onRequestNotificationPermissionThen
+            }
+            notice("보관함에 저장할 오디오를 준비하고 있어요.")
+            BotRuntime.save(appContext, video, interaction.value.saveFormat.name)
+        }
     }
     override fun onRenameBotVideo(video: BotVideo, title: String) {
         BotRuntime.renameVideo(appContext, video, title) { error ->
@@ -925,12 +1000,18 @@ private data class InteractionState(
     val queueSelectedKeys: Set<String> = emptySet(),
     val queueResumeIndex: Int = 0,
 ) {
-    fun snapshot(conversion: ConversionState, history: List<AudioResult>, stream: StreamingState, bot: BotUiState) = AppUiState(
+    fun snapshot(
+        conversion: ConversionState,
+        history: List<AudioResult>,
+        downloads: List<LibraryDownload>,
+        stream: StreamingState,
+        bot: BotUiState,
+    ) = AppUiState(
         destination = destination, videoUri = videoUri, videoName = videoName,
         videoSizeBytes = videoSizeBytes, videoDurationMs = videoDurationMs, videoArtworkPath = videoArtworkPath,
         saveFormat = saveFormat, libraryQuery = libraryQuery, botQuery = botQuery,
         libraryLayout = libraryLayout, botLayout = botLayout, settingsOrigin = settingsOrigin,
-        conversion = conversion, history = history,
+        conversion = conversion, history = history, downloads = downloads,
         stream = stream, bot = bot, botSetupRequested = botSetupRequested, botApiIdText = botApiIdText, botApiHash = botApiHash, botToken = botToken,
         selectionMode = selectionMode, selectedAudioPaths = selectedAudioPaths, selectedBotMessageIds = selectedBotMessageIds,
         pendingLibraryDelete = pendingLibraryDelete, pendingBotDelete = pendingBotDelete, pendingSaveResult = pendingSaveResult,

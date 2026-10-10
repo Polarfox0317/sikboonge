@@ -20,13 +20,15 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ProgressIndicatorDefaults
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -37,6 +39,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
@@ -48,6 +51,8 @@ import io.github.polarfox0317.sikboonge.ui.components.DisconnectDialog
 import io.github.polarfox0317.sikboonge.ui.components.FormColumn
 import io.github.polarfox0317.sikboonge.ui.components.SectionCard
 import io.github.polarfox0317.sikboonge.ui.shell.LocalUpdateController
+import io.github.polarfox0317.sikboonge.ui.shell.ReleaseNotesBody
+import io.github.polarfox0317.sikboonge.ui.shell.releaseNotes
 import io.github.polarfox0317.sikboonge.ui.state.AppActions
 import io.github.polarfox0317.sikboonge.ui.state.AppUiState
 import io.github.polarfox0317.sikboonge.ui.theme.AppDimens
@@ -153,12 +158,6 @@ internal fun SettingsScreen(
                             .testTag("settingsBotPair"),
                     ) {
                         Text("내 Telegram 계정 연결", style = ButtonDefaults.textStyleFor(ButtonDefaults.MediumContainerHeight))
-                    }
-                    state.bot.pairingUrl?.let { url ->
-                        TextButton(
-                            onClick = { actions.onOpenExternalUrl(url) },
-                            modifier = Modifier.fillMaxWidth().testTag("settingsBotPairStart"),
-                        ) { Text("Telegram에서 Start 누르기") }
                     }
                 }
                 if (state.bot.setupComplete || state.bot.connected) {
@@ -268,7 +267,15 @@ internal fun SettingsScreen(
                     ) {
                         Text("\uC0C8 \uBC84\uC804 \uD655\uC778")
                     }
-                    UpdateStatusContent(updateStatus)
+                    UpdateStatusContent(
+                        updateStatus,
+                        onDownload = {
+                            actions.onRequestNotificationPermissionThen { updateController.downloadAndInstall() }
+                        },
+                        onRetry = {
+                            actions.onRequestNotificationPermissionThen { updateController.retry() }
+                        },
+                    )
                 }
             },
             modifier = Modifier.fillMaxWidth(),
@@ -284,7 +291,7 @@ internal fun SettingsScreen(
 
 @Composable
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
-private fun UpdateStatusContent(status: UpdateStatus) {
+private fun UpdateStatusContent(status: UpdateStatus, onDownload: () -> Unit, onRetry: () -> Unit) {
     when (status) {
         UpdateStatus.Idle -> Unit
         UpdateStatus.Checking -> Row(
@@ -305,19 +312,22 @@ private fun UpdateStatusContent(status: UpdateStatus) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         is UpdateStatus.Available -> Column(verticalArrangement = Arrangement.spacedBy(AppDimens.itemSpacing)) {
-            Text(
-                "\uC0C8 \uBC84\uC804 ${status.release.version}\uC774 \uC788\uC5B4\uC694.",
-                style = MaterialTheme.typography.bodyLarge,
-            )
-            if (status.release.notes.isNotBlank()) {
-                Text(
+            ReleaseNotesBody(
+                versionLine = stringResource(
+                    R.string.update_version_transition,
+                    status.installedVersion,
+                    status.release.version,
+                ),
+                content = releaseNotes(
                     status.release.notes,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+                    status.release.title,
+                    status.release.version,
+                    status.release.releaseUrl,
+                ),
+                scrollNotes = false,
+            )
             FilledTonalButton(
-                onClick = UpdateController::downloadAndInstall,
+                onClick = onDownload,
                 modifier = Modifier.fillMaxWidth().heightIn(min = ButtonDefaults.MediumContainerHeight),
             ) { Text("\uB2E4\uC6B4\uB85C\uB4DC \uBC0F \uC124\uCE58") }
         }
@@ -326,19 +336,38 @@ private fun UpdateStatusContent(status: UpdateStatus) {
                 "${status.release.version} APK \uB2E4\uC6B4\uB85C\uB4DC \uC911",
                 style = MaterialTheme.typography.bodyLarge,
             )
-            if (status.totalBytes > 0L) {
-                val progress = (status.downloadedBytes.toFloat() / status.totalBytes).coerceIn(0f, 1f)
-                LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
-                Text(
-                    "${(progress * 100).toInt()}%",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+            val progress = if (status.totalBytes > 0L) {
+                (status.downloadedBytes.toFloat() / status.totalBytes).coerceIn(0f, 1f)
+            } else {
+                null
+            }
+            val animatedProgress by animateFloatAsState(
+                targetValue = progress ?: 0f,
+                animationSpec = ProgressIndicatorDefaults.ProgressAnimationSpec,
+                label = "update-download-progress",
+            )
+            if (progress != null) {
+                LinearWavyProgressIndicator(
+                    progress = { animatedProgress },
+                    modifier = Modifier.fillMaxWidth(),
                 )
             } else {
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                LinearWavyProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(AppDimens.itemSpacing),
+            ) {
+                progress?.let {
+                    Text(
+                        stringResource(R.string.settings_update_progress, (it * 100).toInt()),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 Text(
-                    "${formatBytes(status.downloadedBytes)} \uBC1B\uC74C",
-                    style = MaterialTheme.typography.bodySmall,
+                    stringResource(R.string.settings_update_received, formatBytes(status.downloadedBytes)),
+                    style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -355,7 +384,7 @@ private fun UpdateStatusContent(status: UpdateStatus) {
         )
         is UpdateStatus.Failed -> Column(verticalArrangement = Arrangement.spacedBy(AppDimens.itemSpacing)) {
             Text(status.message, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
-            TextButton(onClick = UpdateController::retry) { Text("\uB2E4\uC2DC \uC2DC\uB3C4") }
+            TextButton(onClick = onRetry) { Text("\uB2E4\uC2DC \uC2DC\uB3C4") }
         }
     }
 }

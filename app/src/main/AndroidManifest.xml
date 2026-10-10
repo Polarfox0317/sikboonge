@@ -13,6 +13,7 @@
             <intent-filter><action android:name="android.intent.action.SEND"/><category android:name="android.intent.category.DEFAULT"/><data android:mimeType="application/octet-stream"/></intent-filter>
         </activity>
         <service android:name=".ConversionService" android:exported="false" android:foregroundServiceType="dataSync|mediaProcessing"/>
+        <service android:name=".update.UpdateDownloadService" android:exported="false" android:foregroundServiceType="dataSync"/>
         <service android:name=".StreamingAudioService" android:exported="true" android:foregroundServiceType="mediaPlayback">
             <intent-filter>
                 <action android:name="androidx.media3.session.MediaSessionService"/>

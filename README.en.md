@@ -42,7 +42,7 @@ Treat the token and `api_hash` as secrets. The app encrypts the saved credential
 
 ## Build from source
 
-Release source version: app version `1.0.1` (version code `110`), release application ID `io.github.polarfox0317.sikboonge`, minimum Android version 8.0 (API 26), Android Gradle Plugin `9.2.1`, Gradle wrapper `9.4.1`, and Android SDK compile level `37`. The project targets 64-bit `arm64-v8a` and `x86_64` devices.
+Release source version: app version `1.0.2` (version code `111`), release application ID `io.github.polarfox0317.sikboonge`, minimum Android version 8.0 (API 26), Android Gradle Plugin `9.2.1`, Gradle wrapper `9.4.1`, and Android SDK compile level `37`. The project targets 64-bit `arm64-v8a` and `x86_64` devices.
 
 You need a JDK 17 or newer and an Android SDK installation with the SDK Platform and build tools for API 37. From the repository root in PowerShell, build the debug APK with the checked-in Gradle wrapper:
 
@@ -68,9 +68,11 @@ Version `1.0.0` compiled for both debug and release, and `testKotlin` passed 44 
 
 For version `1.0.1` (version code `110`), the curated public source compiled the release variant. The release APK was verified with `apksigner` using the project release certificate. No installation, visual review, or Telegram end-to-end verification was performed for code `110`.
 
+The current source version is `1.0.2` (version code `111`). No build or device verification result is available for this version yet.
+
 ## Existing bot connection data
 
-Bot credentials are encrypted with Android Keystore on the device. Version `1.0.1` reads credentials using the current key alias and does not automatically migrate credentials encrypted under an earlier alias. Existing bot connection data from earlier builds may not be readable after updating; if that happens, setting up the bot again may be required. This release does not automatically delete app preferences or stored keys.
+Bot credentials are encrypted with Android Keystore on the device. Version `1.0.1` and the current `1.0.2` source read credentials using the current key alias and do not automatically migrate credentials encrypted under an earlier alias. Existing bot connection data from earlier builds may not be readable after updating; if that happens, setting up the bot again may be required. This version does not automatically delete app preferences or stored keys.
 
 ## Third-party software and licensing
 

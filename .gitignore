@@ -25,7 +25,6 @@ Desktop.ini
 local.properties
 *.jks
 *.keystore
-/app/src/androidTest/screenshots/
 /.tools/
 /.codex-remote-attachments/
 /.publish-staging/
@@ -39,6 +38,7 @@ local.properties
 /artifacts/**/*.apk
 /artifacts/**/*.apk.idsig
 /artifacts/**/*.log
+/app/src/androidTest/screenshots/
 /artifacts/ui-*/
 /artifacts/clip-frames/
 

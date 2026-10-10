@@ -4,6 +4,7 @@ import io.github.polarfox0317.sikboonge.AudioFormat
 import io.github.polarfox0317.sikboonge.AudioResult
 import io.github.polarfox0317.sikboonge.BotUiState
 import io.github.polarfox0317.sikboonge.ConversionState
+import io.github.polarfox0317.sikboonge.LibraryDownload
 import io.github.polarfox0317.sikboonge.StreamingState
 import io.github.polarfox0317.sikboonge.PlaybackSource
 
@@ -44,6 +45,7 @@ data class AppUiState(
     val settingsOrigin: Destination = Destination.Bot,
     val conversion: ConversionState = ConversionState(),
     val history: List<AudioResult> = emptyList(),
+    val downloads: List<LibraryDownload> = emptyList(),
     val stream: StreamingState = StreamingState(),
     val bot: BotUiState = BotUiState(),
     val botSetupRequested: Boolean = false,

@@ -12,9 +12,11 @@ import org.json.JSONObject
 import java.io.File
 import java.nio.file.Files
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.ArrayDeque
 
 data class AudioResult(
     val path: String,
@@ -23,6 +25,19 @@ data class AudioResult(
     val bytes: Long,
     val date: Long,
     val artworkPath: String? = null,
+)
+data class LibraryDownload(
+    val id: Long,
+    val name: String,
+    val mime: String,
+    val date: Long,
+    val artworkPath: String?,
+    val stage: String,
+    val progress: Float? = null,
+    val receivedBytes: Long? = null,
+    val totalBytes: Long? = null,
+    val bytesPerSecond: Long? = null,
+    val remainingSeconds: Long? = null,
 )
 enum class ConversionOrigin { LOCAL_CONVERT, BOT_SAVE }
 data class ConversionState(
@@ -41,6 +56,8 @@ internal data class AppStoreRemovalResult(val removedEntries: Int, val failedFil
 object AppStore {
     val state = MutableStateFlow(ConversionState())
     val history = MutableStateFlow<List<AudioResult>>(emptyList())
+    val downloads = MutableStateFlow<List<LibraryDownload>>(emptyList())
+    val cancelledDownloadId = MutableStateFlow<Long?>(null)
     @Synchronized fun load(context: Context) {
         val file = File(context.filesDir, "history.json")
         history.value = try {
@@ -54,6 +71,34 @@ object AppStore {
     }
     @Synchronized fun add(context: Context, result: AudioResult) {
         persist(context, listOf(result) + history.value)
+    }
+    @Synchronized internal fun putDownload(download: LibraryDownload) {
+        downloads.value = listOf(download) + downloads.value.filterNot { it.id == download.id }
+    }
+    @Synchronized internal fun updateDownload(id: Long, stage: String, metrics: DownloadMetrics) {
+        downloads.value = downloads.value.map { item ->
+            if (item.id != id) item else item.copy(
+                stage = stage,
+                progress = metrics.progress,
+                receivedBytes = metrics.receivedBytes,
+                totalBytes = metrics.totalBytes,
+                bytesPerSecond = metrics.bytesPerSecond,
+                remainingSeconds = metrics.remainingSeconds,
+            )
+        }
+    }
+    @Synchronized internal fun removeDownload(id: Long) {
+        downloads.value = downloads.value.filterNot { it.id == id }
+    }
+    @Synchronized internal fun completeDownload(context: Context, id: Long, result: AudioResult) {
+        val pending = downloads.value.firstOrNull { it.id == id }
+        removeDownload(id) // Avoid presenting the same save as both pending and completed.
+        try {
+            add(context, result)
+        } catch (failure: Exception) {
+            if (pending != null) putDownload(pending)
+            throw failure
+        }
     }
     /** Call on a worker thread; source artwork is captured and persisted without consulting BotRuntime. */
     @Synchronized internal fun attachMissingArtwork(context: Context, videos: List<BotVideo>): Int {
@@ -205,10 +250,16 @@ class ConversionService : Service() {
     @Volatile private var botInputBridge: ExternalAudioInputBridge? = null
     private var worker: Thread? = null
     @Volatile private var workerJob = 0L
-    @Volatile private var pendingIntent: Intent? = null
+    private val pendingIntents = ArrayDeque<Intent>()
     @Volatile private var activeBotFileId: Int? = null
+    @Volatile private var activeLibraryDownloadId: Long? = null
+    @Volatile private var activeDownloadTotalBytes: Long? = null
+    @Volatile private var activeStage: String = ""
+    @Volatile private var lastNotificationAtNanos = 0L
+    @Volatile private var lastNotifiedStage = ""
+    @Volatile private var lastLibraryUpdateAtNanos = 0L
     private val stateLock = Any()
-    @Volatile private var transferProgress: TransferProgressSampler? = null
+    @Volatile private var transferProgress: DownloadProgressTracker? = null
     private var activeJob = 0L
     @Volatile private var activeOrigin = ConversionOrigin.LOCAL_CONVERT
     override fun onBind(intent: Intent?): IBinder? = null
@@ -218,22 +269,45 @@ class ConversionService : Service() {
     }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == "cancel") { cancel(); return START_NOT_STICKY }
+        if (intent?.action == ACTION_CANCEL_DOWNLOAD) {
+            intent.getLongExtra(EXTRA_DOWNLOAD_ID, 0L).takeIf { it > 0L }?.let(::cancelDownload)
+            if (worker?.isAlive != true && synchronized(stateLock) { pendingIntents.isEmpty() }) stopSelf(startId)
+            return START_NOT_STICKY
+        }
+        if (intent == null) {
+            if (worker?.isAlive != true) stopSelf()
+            return START_NOT_STICKY
+        }
         if (intent?.action == "cancel_bot") {
             val requestedFileId = intent.getIntExtra(BotRuntime.EXTRA_TDLIB_FILE_ID, 0).takeIf { it > 0 }
             if (requestedFileId == null || activeBotFileId == requestedFileId) {
                 if (activeBotFileId != null) cancel()
             }
             synchronized(stateLock) {
-                val queuedFileId = pendingIntent?.getIntExtra(BotRuntime.EXTRA_TDLIB_FILE_ID, 0)?.takeIf { it > 0 }
-                if (queuedFileId != null && (requestedFileId == null || requestedFileId == queuedFileId)) pendingIntent = null
+                val queued = pendingIntents.filter { queuedIntent ->
+                    val queuedFileId = queuedIntent.getIntExtra(BotRuntime.EXTRA_TDLIB_FILE_ID, 0).takeIf { it > 0 }
+                    queuedFileId != null && (requestedFileId == null || requestedFileId == queuedFileId)
+                }
+                pendingIntents.removeAll(queued.toSet())
+                queued.forEach { queuedIntent ->
+                    queuedIntent.getLongExtra(EXTRA_DOWNLOAD_ID, 0L).takeIf { it > 0L }?.let(AppStore::removeDownload)
+                }
             }
             return START_NOT_STICKY
         }
         if (worker?.isAlive == true) {
-            if (cancelled.get() || activeJob == 0L) synchronized(stateLock) { pendingIntent = intent }
+            val isBotSave = intent.getIntExtra(BotRuntime.EXTRA_TDLIB_FILE_ID, 0) > 0
+            if (cancelled.get() || activeJob == 0L || isBotSave) synchronized(stateLock) {
+                if (isBotSave) {
+                    val downloadId = intent.getLongExtra(EXTRA_DOWNLOAD_ID, 0L).takeIf { it > 0L } ?: nextDownloadId()
+                    intent.putExtra(EXTRA_DOWNLOAD_ID, downloadId)
+                    intent.putExtra(EXTRA_DOWNLOAD_DATE, System.currentTimeMillis())
+                    AppStore.putDownload(pendingDownload(intent, downloadId, "대기 중"))
+                }
+                pendingIntents.addLast(intent)
+            }
             return START_NOT_STICKY
         }
-        if (intent == null) { stopSelf(); return START_NOT_STICKY }
         return startJob(intent)
     }
 
@@ -245,14 +319,26 @@ class ConversionService : Service() {
             activeJob = job
             transferProgress = null
         }
-        if (android.os.Build.VERSION.SDK_INT >= 35) startForeground(1, notification("오디오 추출 준비 중", null), android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC or android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING)
-        else if (android.os.Build.VERSION.SDK_INT >= 29) startForeground(1, notification("오디오 추출 준비 중", null), android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
-        else startForeground(1, notification("오디오 추출 준비 중", null))
         val botFileId = intent.getIntExtra(BotRuntime.EXTRA_TDLIB_FILE_ID, 0).takeIf { it > 0 }
+        activeOrigin = if (botFileId != null) ConversionOrigin.BOT_SAVE else ConversionOrigin.LOCAL_CONVERT
         val legacyBotSaveAccess = BotSaveTestHooks.accessOverride
         activeBotFileId = botFileId
-        activeOrigin = if (botFileId != null) ConversionOrigin.BOT_SAVE else ConversionOrigin.LOCAL_CONVERT
-        AppStore.state.value = ConversionState(origin = activeOrigin, running = true, stage = if (botFileId != null) "Telegram에서 오디오 확인 중" else "영상 가져오는 중")
+        val libraryDownloadId = if (botFileId != null) {
+            intent.getLongExtra(EXTRA_DOWNLOAD_ID, 0L).takeIf { it > 0L }
+                ?: nextDownloadId().also { intent.putExtra(EXTRA_DOWNLOAD_ID, it) }
+        } else null
+        if (libraryDownloadId != null && intent.getLongExtra(EXTRA_DOWNLOAD_DATE, 0L) <= 0L) {
+            intent.putExtra(EXTRA_DOWNLOAD_DATE, System.currentTimeMillis())
+        }
+        activeLibraryDownloadId = libraryDownloadId
+        activeDownloadTotalBytes = intent.getLongExtra(BotRuntime.EXTRA_TDLIB_SIZE, 0L).takeIf { it > 0L }
+        activeStage = if (botFileId != null) "Telegram에서 오디오 확인 중" else "영상 가져오는 중"
+        if (libraryDownloadId != null) AppStore.putDownload(pendingDownload(intent, libraryDownloadId, activeStage))
+        val foregroundNotification = notification(activeStage, null)
+        if (android.os.Build.VERSION.SDK_INT >= 35) startForeground(1, foregroundNotification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC or android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING)
+        else if (android.os.Build.VERSION.SDK_INT >= 29) startForeground(1, foregroundNotification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        else startForeground(1, foregroundNotification)
+        AppStore.state.value = ConversionState(origin = activeOrigin, running = true, stage = activeStage)
         workerJob = job
         worker = Thread {
             val input = if (botFileId != null) null else File(cacheDir, "input-${System.nanoTime()}.video")
@@ -261,7 +347,7 @@ class ConversionService : Service() {
             var output: File? = null
             var localVideoUri: Uri? = null
             try {
-                val onNetworkBytes: (Long, Long?) -> Unit = { bytes, total -> recordNetworkBytes(job, bytes, total) }
+                val onNetworkRange: (Long, Long, Long?) -> Unit = { offset, bytes, total -> recordNetworkRange(job, offset, bytes, total) }
                 val source: String
                 val name: String
                 if (botFileId != null) {
@@ -273,7 +359,7 @@ class ConversionService : Service() {
                         legacyBotInput = legacyBotSaveAccess.awaitCompletedFile(botFileId, cancelled::get) { received, total ->
                             val delta = (received - previousReceived).coerceAtLeast(0L)
                             previousReceived = received
-                            onNetworkBytes(delta, total.takeIf { it > 0L })
+                            onNetworkRange(previousReceived - delta, delta, total.takeIf { it > 0L })
                             update("저장할 영상을 임시로 받는 중", if (total > 0) (received.toFloat() / total).coerceIn(0f, .99f) else null, job)
                         }
                         source = legacyBotInput.absolutePath
@@ -283,7 +369,7 @@ class ConversionService : Service() {
                             botFileId,
                             intent.getLongExtra(BotRuntime.EXTRA_TDLIB_SIZE, 0L),
                             BotAudioSaveTestHooks.accessOverride ?: BotRuntime,
-                            onBytesTransferred = onNetworkBytes,
+                            onBytesTransferred = onNetworkRange,
                         )
                         botBridge = bridge
                         botInputBridge = bridge
@@ -340,9 +426,15 @@ class ConversionService : Service() {
                     synchronized(stateLock) {
                         checkCancelled()
                         if (activeJob == job) {
-                            AppStore.add(this, result)
+                            if (activeOrigin == ConversionOrigin.BOT_SAVE && libraryDownloadId != null) {
+                                AppStore.completeDownload(this, libraryDownloadId, result)
+                                runCatching { postBotSaveCompletedNotification(libraryDownloadId, result) }
+                            } else {
+                                AppStore.add(this, result)
+                            }
                             addedToHistory = true
                             activeJob = 0L
+                            activeLibraryDownloadId = null
                             AppStore.state.value = if (activeOrigin == ConversionOrigin.BOT_SAVE) {
                                 ConversionState(origin = activeOrigin, botSaveCompletionId = job)
                             } else {
@@ -354,25 +446,28 @@ class ConversionService : Service() {
                     if (!addedToHistory) AudioArtworkStore.deleteUnreferenced(this, listOf(artworkPath), AppStore.history.value.map { it.artworkPath })
                 }
             } catch (_: InterruptedException) {
-                output?.delete(); finish(job, ConversionState(stage = "취소했어요"))
+                output?.delete(); finish(job, cancellationState())
             } catch (e: Exception) {
                 if (!cancelled.get()) AppDiagnostics.failure("conversion", e)
                 val errorContext = when {
                     botFileId != null -> UserFacingErrors.Context.TELEGRAM
                     else -> UserFacingErrors.Context.LOCAL_MEDIA
                 }
-                output?.delete(); finish(job, if (cancelled.get()) ConversionState(stage = "취소했어요") else ConversionState(error = UserFacingErrors.fromThrowable(e, errorContext)))
+                output?.delete(); finish(job, if (cancelled.get()) cancellationState() else ConversionState(error = UserFacingErrors.fromThrowable(e, errorContext)))
             } finally {
                 botBridge?.close()
                 if (botInputBridge === botBridge) botInputBridge = null
                 if (legacyBotInput != null) runCatching { legacyBotSaveAccess?.endSave(requireNotNull(botFileId)) }
+                activeLibraryDownloadId = null
+                activeDownloadTotalBytes = null
+                activeStage = ""
                 activeBotFileId = null
                 input?.delete()
                 probeSessionId = null
                 conversionSessionId = null
                 android.os.Handler(mainLooper).post {
                     if (workerJob != job) return@post
-                    val next = synchronized(stateLock) { pendingIntent.also { pendingIntent = null } }
+                    val next = synchronized(stateLock) { pendingIntents.pollFirst() }
                     worker = null
                     workerJob = 0L
                     if (next != null) {
@@ -412,73 +507,213 @@ class ConversionService : Service() {
     }
 
     private fun checkCancelled() { if (cancelled.get() || Thread.currentThread().isInterrupted) throw InterruptedException() }
-    private fun cancel() {
+    private fun cancel(expectedDownloadId: Long? = null): Boolean {
         synchronized(stateLock) {
-            if (activeJob == 0L) return
+            if (activeJob == 0L || (expectedDownloadId != null && activeLibraryDownloadId != expectedDownloadId)) return false
+            if (cancelled.get()) return false
             cancelled.set(true)
         }
         botInputBridge?.close()
         probeSessionId?.let { AudioEngine.cancel(it) }
         conversionSessionId?.let { AudioEngine.cancel(it) }
         worker?.interrupt()
+        return true
     }
-    override fun onDestroy() { cancel(); super.onDestroy() }
+
+    private fun cancelDownload(downloadId: Long): Boolean {
+        val queuedDownloadRemoved = synchronized(stateLock) {
+            val queuedIntent = pendingIntents.firstOrNull {
+                it.getLongExtra(EXTRA_DOWNLOAD_ID, 0L) == downloadId
+            }
+            if (queuedIntent == null) false else {
+                pendingIntents.remove(queuedIntent)
+                AppStore.removeDownload(downloadId)
+                true
+            }
+        }
+        val activeDownloadCancelled = !queuedDownloadRemoved && cancel(downloadId)
+        if (queuedDownloadRemoved || activeDownloadCancelled) {
+            AppStore.cancelledDownloadId.value = downloadId
+        }
+        return queuedDownloadRemoved || activeDownloadCancelled
+    }
+
+    override fun onDestroy() {
+        cancel()
+        synchronized(stateLock) {
+            pendingIntents.forEach { queuedIntent ->
+                queuedIntent.getLongExtra(EXTRA_DOWNLOAD_ID, 0L).takeIf { it > 0L }?.let(AppStore::removeDownload)
+            }
+            pendingIntents.clear()
+        }
+        super.onDestroy()
+    }
     override fun onTimeout(startId: Int, fgsType: Int) { cancel(); stopSelf() }
     private fun update(stage: String, progress: Float?, job: Long) {
         synchronized(stateLock) {
             if (activeJob != job) return
-            val sample = transferProgress?.snapshot()
+            activeStage = stage
+            val sample = transferProgress?.observeProgress(progress) ?: DownloadMetrics(progress = progress)
             AppStore.state.value = ConversionState(
                 origin = activeOrigin,
                 running = true,
                 stage = stage,
-                progress = progress,
+                progress = sample.progress,
                 receivedBytes = sample?.receivedBytes,
                 totalBytes = sample?.totalBytes,
                 bytesPerSecond = sample?.bytesPerSecond,
             )
-            getSystemService(NotificationManager::class.java).notify(1, notification(stage, progress))
+            activeLibraryDownloadId?.let { AppStore.updateDownload(it, stage, sample) }
+            postProgressNotification(stage, sample.progress, sample)
         }
     }
     private fun beginTransferStage(job: Long) {
         synchronized(stateLock) {
             if (activeJob != job || cancelled.get()) return
-            transferProgress = TransferProgressSampler()
+            val initialDownloadedSize = activeBotFileId?.let(BotRuntime::fileInfo)?.local?.downloadedSize?.toLong()
+            transferProgress = DownloadProgressTracker(activeDownloadTotalBytes, initialDownloadedSize)
             AppStore.state.value = AppStore.state.value.copy(
+                progress = null,
                 receivedBytes = 0L,
-                totalBytes = null,
+                totalBytes = activeDownloadTotalBytes,
                 bytesPerSecond = null,
             )
+            activeLibraryDownloadId?.let { id ->
+                AppStore.updateDownload(id, activeStage, DownloadMetrics(totalBytes = activeDownloadTotalBytes))
+            }
         }
     }
-    private fun recordNetworkBytes(job: Long, bytes: Long, totalBytes: Long?) {
+    private fun recordNetworkRange(job: Long, offset: Long, bytes: Long, totalBytes: Long?) {
         synchronized(stateLock) {
             if (activeJob != job || cancelled.get()) return
             val sampler = transferProgress ?: return
-            val updatedSample = sampler.add(bytes, totalBytes) ?: return
+            var updatedSample = sampler.addRange(offset, bytes, totalBytes)
+            val tdlibFile = activeBotFileId?.let(BotRuntime::fileInfo)
+            if (tdlibFile != null) {
+                updatedSample = sampler.observePlatformDownloadedSize(tdlibFile.local.downloadedSize.toLong(), totalBytes)
+            }
             AppStore.state.value = AppStore.state.value.copy(
                 receivedBytes = updatedSample.receivedBytes,
                 totalBytes = updatedSample.totalBytes,
                 bytesPerSecond = updatedSample.bytesPerSecond,
             )
+            val now = System.nanoTime()
+            if (now - lastLibraryUpdateAtNanos >= LIBRARY_UPDATE_INTERVAL_NANOS) {
+                activeLibraryDownloadId?.let { AppStore.updateDownload(it, activeStage, updatedSample) }
+                lastLibraryUpdateAtNanos = now
+            }
+            postProgressNotification(activeStage, updatedSample.progress, updatedSample)
         }
     }
     private fun finish(job: Long, state: ConversionState) {
         synchronized(stateLock) {
             if (activeJob != job) return
             activeJob = 0L
+            activeLibraryDownloadId?.let(AppStore::removeDownload)
+            activeLibraryDownloadId = null
             AppStore.state.value = state.copy(origin = activeOrigin)
         }
     }
-    private fun notification(stage: String, progress: Float?): Notification {
-        val cancel = PendingIntent.getService(this, 1, Intent(this, ConversionService::class.java).setAction("cancel"), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+    private fun cancellationState(): ConversionState = if (activeOrigin == ConversionOrigin.BOT_SAVE) {
+        ConversionState(origin = ConversionOrigin.BOT_SAVE)
+    } else {
+        ConversionState(stage = "취소했어요")
+    }
+    private fun postProgressNotification(stage: String, progress: Float?, metrics: DownloadMetrics?, force: Boolean = false) {
+        val now = System.nanoTime()
+        if (!force && stage == lastNotifiedStage && now - lastNotificationAtNanos < NOTIFICATION_INTERVAL_NANOS) return
+        lastNotificationAtNanos = now
+        lastNotifiedStage = stage
+        getSystemService(NotificationManager::class.java).notify(1, notification(stage, progress, metrics))
+    }
+    private fun notification(stage: String, progress: Float?, metrics: DownloadMetrics? = null): Notification {
+        val isBotSave = activeOrigin == ConversionOrigin.BOT_SAVE && activeLibraryDownloadId != null
+        val downloadId = activeLibraryDownloadId
+        val download = downloadId?.let { id -> AppStore.downloads.value.firstOrNull { it.id == id } }
+        val cancelIntent = Intent(this, ConversionService::class.java)
+            .setAction(if (isBotSave) ACTION_CANCEL_DOWNLOAD else "cancel")
+        if (isBotSave && downloadId != null) cancelIntent.putExtra(EXTRA_DOWNLOAD_ID, downloadId)
+        val cancel = PendingIntent.getService(
+            this,
+            if (isBotSave) requireNotNull(downloadId).toInt() else 1,
+            cancelIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
-        return NotificationCompat.Builder(this, "conversion").setSmallIcon(android.R.drawable.stat_sys_download).setContentTitle(getString(R.string.app_name)).setContentText(stage).setContentIntent(open).setOngoing(true).setProgress(100, ((progress ?: 0f) * 100).toInt(), progress == null).addAction(0, "취소", cancel).build()
+        val content = if (isBotSave) DownloadProgress.format(metrics ?: DownloadMetrics()).notification else stage
+        val boundedProgress = progress?.takeIf { it.isFinite() }?.coerceIn(0f, 0.99f)
+        val percent = ((boundedProgress ?: 0f) * 100f).toInt()
+        return NotificationCompat.Builder(this, "conversion")
+            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setContentTitle(if (isBotSave) download?.name ?: getString(R.string.app_name) else getString(R.string.app_name))
+            .setContentText(content)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(content))
+            .setOnlyAlertOnce(true)
+            .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+            .setSubText(if (isBotSave) stage else null)
+            .setContentIntent(open)
+            .setOngoing(true)
+            .setProgress(100, percent, boundedProgress == null)
+            .addAction(0, if (isBotSave) "다운로드 중지" else "취소", cancel)
+            .build()
+    }
+    private fun postBotSaveCompletedNotification(downloadId: Long, result: AudioResult) {
+        val notificationId = BOT_SAVE_COMPLETED_NOTIFICATION_BASE or (downloadId.hashCode() and BOT_SAVE_COMPLETED_NOTIFICATION_MASK)
+        val openLibrary = Intent(this, MainActivity::class.java)
+            .putExtra("open_library", true)
+            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        val contentIntent = PendingIntent.getActivity(
+            this,
+            notificationId,
+            openLibrary,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val completed = NotificationCompat.Builder(this, "conversion")
+            .setSmallIcon(android.R.drawable.stat_sys_download_done)
+            .setContentTitle(result.name)
+            .setContentText("보관함에 저장했어요")
+            .setContentIntent(contentIntent)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
+            .build()
+        getSystemService(NotificationManager::class.java).notify(notificationId, completed)
+    }
+    private fun pendingDownload(intent: Intent, id: Long, stage: String): LibraryDownload {
+        val sourceName = intent.getStringExtra(BotRuntime.EXTRA_TDLIB_NAME).orEmpty().ifBlank { "Telegram 영상" }
+        val baseName = sourceName.substringBeforeLast('.', sourceName)
+            .replace(Regex("[\\\\/:*?\"<>|]"), "_")
+            .take(70).ifBlank { "오디오" }
+        val mime = when (intent.getStringExtra("format")) {
+            AudioFormat.MP3.name -> "audio/mpeg"
+            AudioFormat.WAV.name -> "audio/wav"
+            else -> "audio/*"
+        }
+        return LibraryDownload(
+            id = id,
+            name = baseName,
+            mime = mime,
+            date = intent.getLongExtra(EXTRA_DOWNLOAD_DATE, System.currentTimeMillis()),
+            artworkPath = intent.getStringExtra(AudioArtworkStore.EXTRA_ARTWORK_PATH),
+            stage = stage,
+        )
     }
     private fun displayName(uri: Uri): String = try { contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { if (it.moveToFirst()) it.getString(0) else null } ?: "영상" } catch (_: Exception) { "영상" }
     companion object {
         const val MAX_BYTES = 1024L * 1024 * 1024
+        private val downloadSequence = AtomicLong(System.currentTimeMillis().coerceAtLeast(1L) * 1000L)
+        private const val BOT_SAVE_COMPLETED_NOTIFICATION_BASE = 0x50000000
+        private const val BOT_SAVE_COMPLETED_NOTIFICATION_MASK = 0x0FFFFFFF
+        const val EXTRA_DOWNLOAD_ID = "library_download_id"
+        private const val EXTRA_DOWNLOAD_DATE = "library_download_date"
+        const val ACTION_CANCEL_DOWNLOAD = "cancel_download"
         private const val CANCEL_GRACE_SECONDS = 15L
         private const val DEFAULT_CONVERSION_TIMEOUT_SECONDS = 600L
+        // Coalesce state and notification updates without leaving pending rows stale.
+        private const val LIBRARY_UPDATE_INTERVAL_NANOS = 250_000_000L
+        private const val NOTIFICATION_INTERVAL_NANOS = 500_000_000L
     }
+
+    private fun nextDownloadId(): Long = downloadSequence.incrementAndGet().coerceAtLeast(1L)
 }

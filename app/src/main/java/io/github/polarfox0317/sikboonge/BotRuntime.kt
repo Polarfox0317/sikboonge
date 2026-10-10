@@ -537,26 +537,32 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
         }
     }
 
-    fun pair(context: Context) {
+    fun pair(context: Context): String? {
         appContext = context.applicationContext
         if (!ready) {
             publish { copy(error = "먼저 봇에 연결해 주세요.") }
-            return
+            return null
+        }
+        val username = botUsername
+        if (username.isNullOrBlank()) {
+            publish { copy(error = "봇 username을 확인한 뒤 다시 시도해 주세요.") }
+            return null
         }
         val random = ByteArray(18).also(SecureRandom()::nextBytes)
         val nonce = Base64.encodeToString(random, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
         random.fill(0)
+        val pairingUrl = "https://t.me/$username?start=$nonce"
         pendingNonce = nonce
         BotPrivateStore(context).apply { pendingNonce = nonce; pendingCreatedMs = System.currentTimeMillis() }
-        val username = botUsername
         publish {
             copy(
-                pairingUrl = username?.let { "https://t.me/$it?start=$nonce" },
+                pairingUrl = pairingUrl,
                 paired = false,
                 status = "Telegram에서 내 계정으로 시작을 눌러 연결하세요.",
                 error = null,
             )
         }
+        return pairingUrl
     }
 
     /** Rename one cached inbox card locally; no Telegram message is edited. */

@@ -1,3 +1,25 @@
 <resources>
     <string name="app_name">Sikboonge</string>
+    <string name="update_dialog_title">A new version is available</string>
+    <string name="update_version_transition">%1$s → %2$s</string>
+    <string name="update_version_name">Version %1$s</string>
+    <string name="update_completed_title">Updated</string>
+    <string name="update_action">Update</string>
+    <string name="update_later">Later</string>
+    <string name="update_skip_version">Skip this version</string>
+    <string name="update_full_release">View full release notes on GitHub</string>
+    <string name="update_confirm">Done</string>
+    <string name="update_notes_empty">No change notes are available.</string>
+    <string name="changelog_note_connected_search">After connecting the bot, the app opens Search and Videos.</string>
+    <string name="changelog_note_offline_list">Previously received videos remain visible while disconnected or reconnecting.</string>
+    <string name="changelog_note_bot_audio">Fixed bot-saved audio appearing in the Extracted screen on the Conversion tab.</string>
+    <string name="changelog_1_0_2_downloads_heading">Download notifications improved</string>
+    <string name="changelog_1_0_2_downloads_library">You can view audio downloads in the Library.</string>
+    <string name="changelog_1_0_2_downloads_metrics">Progress, download speed, and estimated time remaining appear in the Library and system notifications.</string>
+    <string name="changelog_1_0_2_downloads_cancel">You can stop a download from the Library or system notification.</string>
+    <string name="changelog_1_0_2_downloads_complete">A system notification appears when a download finishes.</string>
+    <string name="changelog_1_0_2_updates_heading">Update notes improved</string>
+    <string name="changelog_1_0_2_updates_language">Release notes are organized into lists in your selected language for easier reading.</string>
+    <string name="settings_update_progress">%1$d%%</string>
+    <string name="settings_update_received">%1$s received</string>
 </resources>

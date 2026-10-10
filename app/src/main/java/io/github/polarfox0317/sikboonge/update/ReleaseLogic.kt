@@ -23,7 +23,9 @@ internal data class AppRelease(
     val title: String,
     val notes: String,
     val apk: GithubReleaseAsset?,
-)
+) {
+    val releaseUrl: String get() = releasePageUrl(tagName)
+}
 
 /** Numeric, suffix-insensitive comparison for tags such as v0.3.0 and installed 0.3.0-debug. */
 internal fun compareVersions(first: String, second: String): Int? {
@@ -61,7 +63,8 @@ internal fun parseReleaseRecord(record: GithubReleaseRecord): AppRelease? {
         tagName = record.tagName,
         version = version,
         title = record.title.trim().ifBlank { record.tagName },
-        notes = shortenReleaseNotes(record.body),
+        // Keep the original locale sections and Markdown for the presentation parser.
+        notes = record.body,
         apk = selectApkAsset(record.assets),
     )
 }

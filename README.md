@@ -42,7 +42,7 @@
 
 ## 소스에서 빌드
 
-공개 소스 버전은 앱 버전 `1.0.1`(version code `110`)이며, 릴리스 application ID는 `io.github.polarfox0317.sikboonge`입니다. 최소 Android 버전은 8.0(API 26), Android Gradle Plugin은 `9.2.1`, Gradle wrapper는 `9.4.1`, Android SDK compile level은 `37`입니다. 대상 ABI는 `arm64-v8a`와 `x86_64`입니다.
+공개 소스 버전은 앱 버전 `1.0.2`(version code `111`)이며, 릴리스 application ID는 `io.github.polarfox0317.sikboonge`입니다. 최소 Android 버전은 8.0(API 26), Android Gradle Plugin은 `9.2.1`, Gradle wrapper는 `9.4.1`, Android SDK compile level은 `37`입니다. 대상 ABI는 `arm64-v8a`와 `x86_64`입니다.
 
 JDK 17 이상과 API 37 SDK Platform 및 빌드 도구가 설치된 Android SDK가 필요합니다. PowerShell에서 저장소 루트로 이동한 뒤 체크인된 Gradle wrapper로 디버그 APK를 빌드합니다.
 
@@ -73,9 +73,11 @@ Android APK와 대응 소스 아카이브는 [최신 GitHub 릴리스](https://g
 
 버전 `1.0.1`(version code `110`)은 공개용 소스로 릴리스 빌드를 완료했습니다. 릴리스 APK는 프로젝트 릴리스 인증서를 사용해 `apksigner`로 확인했습니다. 코드 `110`의 기기 설치, 시각적 검토, Telegram 종단 간 동작은 검증하지 않았습니다.
 
+현재 소스는 버전 `1.0.2`(version code `111`)입니다. 해당 버전의 빌드와 기기 검증 결과는 아직 없습니다.
+
 ## 기존 봇 연결 정보
 
-봇 연결 정보는 기기의 Android Keystore로 암호화됩니다. 버전 `1.0.1`은 현재 키 alias로 암호화된 정보를 읽으며, 이전 alias로 암호화된 정보를 자동으로 옮기지 않습니다. 이전 빌드의 봇 연결 정보는 업데이트 후 읽히지 않을 수 있으며, 그런 경우 봇을 다시 설정해야 할 수 있습니다. 이 릴리스는 앱 설정이나 저장된 키를 자동으로 삭제하지 않습니다.
+봇 연결 정보는 기기의 Android Keystore로 암호화됩니다. 버전 `1.0.1`과 현재 소스 `1.0.2`는 현재 키 alias로 암호화된 정보를 읽으며, 이전 alias로 암호화된 정보를 자동으로 옮기지 않습니다. 이전 빌드의 봇 연결 정보는 업데이트 후 읽히지 않을 수 있으며, 그런 경우 봇을 다시 설정해야 할 수 있습니다. 이 버전은 앱 설정이나 저장된 키를 자동으로 삭제하지 않습니다.
 
 ## Third-party software and licensing
 

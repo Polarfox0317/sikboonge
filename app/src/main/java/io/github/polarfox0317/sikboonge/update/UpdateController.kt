@@ -32,7 +32,11 @@ internal sealed interface UpdateStatus {
     data object Checking : UpdateStatus
     data object UpToDate : UpdateStatus
     data object NoPublishedRelease : UpdateStatus
-    data class Available(val release: AppRelease, val promptOnLaunch: Boolean) : UpdateStatus
+    data class Available(
+        val release: AppRelease,
+        val promptOnLaunch: Boolean,
+        val installedVersion: String = "",
+    ) : UpdateStatus
     data class Downloading(
         val release: AppRelease,
         val downloadedBytes: Long,
@@ -52,7 +56,9 @@ internal enum class ActivityLaunchKind { UnknownSourcesSettings, Installer }
 
 internal data class UpdateActivityLaunchRequest(val id: Long, val kind: ActivityLaunchKind)
 
-internal data class AppChangelog(val versionCode: Long, val versionName: String, val notes: List<String>)
+internal data class AppChangelog(val versionCode: Long, val versionName: String, val notes: List<ReleaseNoteBlock>) {
+    val releaseUrl: String get() = releasePageUrl("v$versionName")
+}
 
 /** Process-scoped update state, download work, and update preferences. */
 internal object UpdateController {
@@ -64,6 +70,7 @@ internal object UpdateController {
     private const val CONNECT_TIMEOUT_MS = 15_000
     private const val READ_TIMEOUT_MS = 30_000
     private const val BUFFER_SIZE = 64 * 1024
+    private const val UPDATE_NOTIFICATION_INTERVAL_NANOS = 400_000_000L
 
     private val processScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val _status = MutableStateFlow<UpdateStatus>(UpdateStatus.Idle)
@@ -82,6 +89,9 @@ internal object UpdateController {
     private var awaitingActivityResult: ActivityLaunchKind? = null
     private var checkJob: Job? = null
     private var downloadJob: Job? = null
+    private val downloadLock = Any()
+    private var downloadGeneration = 0L
+    private var lastUpdateNotificationAtNanos = 0L
     private var pendingRelease: AppRelease? = null
     private var verifiedApk: File? = null
     private var expectedInstalledVersionCode = 0L
@@ -120,11 +130,20 @@ internal object UpdateController {
         )
     }.getOrNull()
 
-    private fun bundledChangelog(versionCode: Long): List<String>? = when (versionCode) {
+    private fun bundledChangelog(versionCode: Long): List<ReleaseNoteBlock>? = when (versionCode) {
         109L, 110L -> listOf(
-            "봇 연결 후 검색과 영상 목록 화면으로 바로 이동하도록 수정했어요.",
-            "연결이 끊기거나 재연결 중이어도 기존에 받은 영상 목록을 볼 수 있어요.",
-            "봇에서 저장한 오디오가 변환 탭의 추출 완료 화면에 나타나는 문제를 수정했어요.",
+            ReleaseNoteBlock.Item("봇 연결 후 검색과 영상 목록 화면으로 바로 이동하도록 수정했어요."),
+            ReleaseNoteBlock.Item("연결이 끊기거나 재연결 중이어도 기존에 받은 영상 목록을 볼 수 있어요."),
+            ReleaseNoteBlock.Item("봇에서 저장한 오디오가 변환 탭의 추출 완료 화면에 나타나는 문제를 수정했어요."),
+        )
+        111L -> listOf(
+            ReleaseNoteBlock.Heading("다운로드 알림 개선"),
+            ReleaseNoteBlock.Item("다운로드 중인 오디오를 보관함 목록에서 확인할 수 있어요.", depth = 1),
+            ReleaseNoteBlock.Item("진행률, 다운로드 속도, 예상 남은 시간을 보관함과 시스템 알림에 표시해요.", depth = 1),
+            ReleaseNoteBlock.Item("보관함과 시스템 알림에서 다운로드를 중지할 수 있어요.", depth = 1),
+            ReleaseNoteBlock.Item("다운로드가 완료되면 시스템 알림으로 알려줘요.", depth = 1),
+            ReleaseNoteBlock.Heading("업데이트 안내 개선"),
+            ReleaseNoteBlock.Item("언어에 맞는 변경사항을 목록으로 정리해 읽기 편하게 개선했어요.", depth = 1),
         )
         else -> null
     }
@@ -216,7 +235,11 @@ internal object UpdateController {
 
         val skippedVersion = preferences(context).getString(KEY_SKIPPED_VERSION, null)
         val promptOnLaunch = !manual && skippedVersion != release.version
-        _status.value = UpdateStatus.Available(release, promptOnLaunch)
+        _status.value = UpdateStatus.Available(
+            release = release,
+            promptOnLaunch = promptOnLaunch,
+            installedVersion = normalizedVersion(installedName) ?: installedName,
+        )
     }
 
     fun dismissLaunchPrompt() {
@@ -242,10 +265,22 @@ internal object UpdateController {
 
     fun cancelDownload() {
         val current = _status.value as? UpdateStatus.Downloading ?: return
-        downloadJob?.cancel()
-        downloadJob = null
+        synchronized(downloadLock) {
+            downloadGeneration += 1L
+            downloadJob?.cancel()
+            downloadJob = null
+            contextOrNull()?.let { context -> runCatching { UpdateDownloadService.clear(context) } }
+        }
         verifiedApk = null
-        _status.value = UpdateStatus.Available(current.release, promptOnLaunch = false)
+        val installedName = contextOrNull()?.let { context ->
+            runCatching { getAppPackageInfo(context, context.packageName).versionName.orEmpty() }
+                .getOrDefault("")
+        }.orEmpty()
+        _status.value = UpdateStatus.Available(
+            current.release,
+            promptOnLaunch = false,
+            installedVersion = normalizedVersion(installedName) ?: installedName,
+        )
     }
 
     fun retry() {
@@ -269,42 +304,83 @@ internal object UpdateController {
             )
             return
         }
-        downloadJob?.cancel()
+        val generation = synchronized(downloadLock) {
+            downloadGeneration += 1L
+            downloadJob?.cancel()
+            downloadJob = null
+            lastUpdateNotificationAtNanos = 0L
+            downloadGeneration
+        }
         verifiedApk = null
         pendingRelease = release
         _status.value = UpdateStatus.Downloading(release, 0L, asset.sizeBytes)
-        downloadJob = processScope.launch {
-            val apkFile = try {
-                withContext(Dispatchers.IO) {
+        try {
+            UpdateDownloadService.start(context)
+        } catch (_: Exception) {
+            runCatching { UpdateDownloadService.clear(context) }
+            _status.value = UpdateStatus.Failed("업데이트 다운로드를 시작하지 못했어요.", release)
+            return
+        }
+        val job = processScope.launch {
+            var apkFile: File? = null
+            try {
+                apkFile = withContext(Dispatchers.IO) {
                     downloadApk(context, asset) { downloaded, total ->
-                        _status.value = UpdateStatus.Downloading(release, downloaded, total)
+                        synchronized(downloadLock) {
+                            if (generation != downloadGeneration) return@synchronized
+                            _status.value = UpdateStatus.Downloading(release, downloaded, total)
+                            val now = System.nanoTime()
+                            if (lastUpdateNotificationAtNanos == 0L || now - lastUpdateNotificationAtNanos >= UPDATE_NOTIFICATION_INTERVAL_NANOS) {
+                                UpdateDownloadService.showProgress(context, downloaded, total)
+                                lastUpdateNotificationAtNanos = now
+                            }
+                        }
                     }
                 }
+                currentCoroutineContext().ensureActive()
+                val verificationError = withContext(Dispatchers.IO) {
+                    verifyApk(context, requireNotNull(apkFile))
+                }
+                if (verificationError != null) {
+                    requireNotNull(apkFile).delete()
+                    _status.value = UpdateStatus.Failed(verificationError, release)
+                    return@launch
+                }
+
+                val verified = requireNotNull(apkFile)
+                val versionCode = withContext(Dispatchers.IO) {
+                    readArchiveVersionCode(context, verified)
+                } ?: 0L
+                currentCoroutineContext().ensureActive()
+                synchronized(downloadLock) {
+                    if (generation != downloadGeneration) return@synchronized
+                    verifiedApk = verified
+                    expectedInstalledVersionCode = versionCode
+                    runCatching { UpdateDownloadService.showCompleted(context, release.version) }
+                    _status.value = UpdateStatus.PreparingInstall(release)
+                }
+                if (generation == synchronized(downloadLock) { downloadGeneration }) requestSystemInstall()
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
-                _status.value = UpdateStatus.Failed(
-                    "APK를 다운로드하지 못했어요. 연결을 확인하고 다시 시도해 주세요.",
-                    release,
-                )
-                return@launch
+                apkFile?.delete()
+                if (generation == synchronized(downloadLock) { downloadGeneration }) {
+                    _status.value = UpdateStatus.Failed(
+                        "APK를 다운로드하지 못했어요. 연결을 확인하고 다시 시도해 주세요.",
+                        release,
+                    )
+                }
+            } finally {
+                synchronized(downloadLock) {
+                    if (generation == downloadGeneration) {
+                        downloadJob = null
+                        runCatching { UpdateDownloadService.clear(context) }
+                    }
+                }
             }
-
-            val verificationError = withContext(Dispatchers.IO) {
-                verifyApk(context, apkFile)
-            }
-            if (verificationError != null) {
-                apkFile.delete()
-                _status.value = UpdateStatus.Failed(verificationError, release)
-                return@launch
-            }
-
-            verifiedApk = apkFile
-            expectedInstalledVersionCode = withContext(Dispatchers.IO) {
-                readArchiveVersionCode(context, apkFile)
-            } ?: 0L
-            _status.value = UpdateStatus.PreparingInstall(release)
-            requestSystemInstall()
+        }
+        synchronized(downloadLock) {
+            if (generation == downloadGeneration) downloadJob = job else job.cancel()
         }
     }
 

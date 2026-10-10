@@ -1,6 +1,6 @@
 package io.github.polarfox0317.sikboonge.ui.bot
 
-internal enum class BotBody { Loading, Setup, Pairing, Inbox }
+internal enum class BotBody { Loading, Setup, Inbox }
 
 /** Resolves the visible bot destination independently from Compose rendering. */
 internal object BotBodyPolicy {
@@ -12,11 +12,9 @@ internal object BotBodyPolicy {
         setupRequested: Boolean,
         hasCachedVideos: Boolean = false,
     ): BotBody = when {
-        connected -> BotBody.Inbox
-        setupRequested -> BotBody.Setup
         paired || setupComplete || hasCachedVideos -> BotBody.Inbox
+        connected || setupRequested -> BotBody.Setup
         !initialStateLoaded -> BotBody.Loading
-        !setupComplete -> BotBody.Setup
-        else -> BotBody.Pairing
+        else -> BotBody.Setup
     }
 }

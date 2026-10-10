@@ -20,6 +20,8 @@ internal object AppDimens {
     val sectionSpacing = 24.dp
     // app choice: spacing and padding within app content units.
     val itemSpacing = 16.dp
+    // app choice: spacing between rows of a compact text list.
+    val listItemSpacing = 8.dp
     // app choice: a compact, square artwork beside media metadata.
     val mediaThumbnailSize = 88.dp
     // app choice: decorative empty-state artwork with clear visual presence.

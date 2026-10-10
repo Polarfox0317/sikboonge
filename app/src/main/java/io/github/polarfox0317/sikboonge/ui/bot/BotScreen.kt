@@ -30,7 +30,6 @@ import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.LoadingIndicatorDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -126,7 +125,6 @@ internal fun BotScreen(
                     label = "봇 연결 상태를 확인하고 있어요.",
                 )
                 BotBody.Setup -> BotSetup(state, actions, contentPadding)
-                BotBody.Pairing -> BotPairing(state, actions, contentPadding)
                 BotBody.Inbox -> BotInbox(state, actions, gridState, tier, contentPadding, onRename = { editingMessageId = it }, onScrollJump = onScrollJump)
             }
         }
@@ -228,15 +226,9 @@ private fun BotSetup(state: AppUiState, actions: AppActions, contentPadding: Pad
             },
             modifier = Modifier.fillMaxWidth(),
         )
-    }
-}
-
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
-@Composable
-private fun BotPairing(state: AppUiState, actions: AppActions, contentPadding: PaddingValues) {
-    val bot = state.bot
-    FormColumn(Modifier.fillMaxSize().padding(contentPadding).consumeWindowInsets(contentPadding).testTag("botContent")) {
-        BotPairingCard(bot, actions, Modifier.fillMaxWidth())
+        if (bot.connected && !bot.paired) {
+            BotPairingCard(bot, actions, Modifier.fillMaxWidth())
+        }
     }
 }
 
@@ -246,8 +238,7 @@ private fun BotPairingCard(bot: BotUiState, actions: AppActions, modifier: Modif
     SectionCard(
         title = { Text("내 Telegram 계정 연결") },
         body = {
-            BotStatus(bot)
-            Text("내 계정에서 봇의 비공개 대화를 시작해야 영상 목록이 연결돼요.")
+            Text("내 Telegram 계정에 연결하려면 봇과의 비공개 대화를 시작해 주세요.")
             Button(
                 onClick = actions::onPairBot,
                 enabled = !bot.busy && !bot.username.isNullOrBlank(),
@@ -255,14 +246,6 @@ private fun BotPairingCard(bot: BotUiState, actions: AppActions, modifier: Modif
                 contentPadding = ButtonDefaults.contentPaddingFor(ButtonDefaults.MediumContainerHeight),
                 modifier = Modifier.fillMaxWidth().heightIn(min = ButtonDefaults.MediumContainerHeight).testTag("botPair"),
             ) { Text("내 Telegram 계정 연결", style = ButtonDefaults.textStyleFor(ButtonDefaults.MediumContainerHeight)) }
-            bot.pairingUrl?.let { url ->
-                OutlinedButton(
-                    onClick = { actions.onOpenExternalUrl(url) },
-                    shapes = ButtonDefaults.shapesFor(ButtonDefaults.MediumContainerHeight),
-                    contentPadding = ButtonDefaults.contentPaddingFor(ButtonDefaults.MediumContainerHeight),
-                    modifier = Modifier.fillMaxWidth().heightIn(min = ButtonDefaults.MediumContainerHeight),
-                ) { Text("Telegram에서 Start 누르기", style = ButtonDefaults.textStyleFor(ButtonDefaults.MediumContainerHeight)) }
-            }
         },
         modifier = modifier,
     )

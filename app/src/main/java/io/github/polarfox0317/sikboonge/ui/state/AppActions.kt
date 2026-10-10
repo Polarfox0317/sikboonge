@@ -40,10 +40,17 @@ interface AppActions {
     fun onCloseBotSetup()
     /** Replaces the ConversionService cancel callback. */
     fun onCancelConversion()
+    /** Cancels a specific pending or active Telegram save. */
+    fun onCancelDownload(id: Long)
     /** Replaces notifications.launch(POST_NOTIFICATIONS). */
     fun onRequestNotificationPermission()
     /** Replaces the RequestPermission result callback. */
     fun onNotificationPermissionResult(allowed: Boolean)
+    /** Defers an operation until the notification permission prompt completes. */
+    fun onRequestNotificationPermissionThen(onResult: (Boolean) -> Unit) {
+        onRequestNotificationPermission()
+        onResult(false)
+    }
     /** Replaces saveResult assignment and save.launch(result). */
     fun onSaveAudioToDevice(result: AudioResult)
     /** Replaces the SaveAudioContract result callback. */
