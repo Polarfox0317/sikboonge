@@ -25,6 +25,7 @@ Desktop.ini
 local.properties
 *.jks
 *.keystore
+/app/src/androidTest/screenshots/
 /.tools/
 /.codex-remote-attachments/
 /.publish-staging/
