@@ -1,29 +1,8 @@
 # sikboonge
 
+[English](README.md) | [한국어](README.ko.md)
+
 sikboonge (싴붕이) is an Android app for extracting audio from local videos and videos received through your Telegram bot, then keeping the audio in an in-app library. Its mascot is a round, deadpan character wearing headphones. The interface is in Korean.
-
-## 앱 소개
-
-싴붕이는 기기에 저장된 영상이나 Telegram 봇으로 받은 영상에서 오디오를 추출하고, 결과를 앱 안의 보관함에서 재생·공유·내보내기 할 수 있는 Android 앱입니다. 화면은 한국어로 제공됩니다.
-
-- **봇** 탭에서 Telegram 봇으로 전달한 영상 목록을 보고 재생하거나 오디오로 저장할 수 있습니다. 앱을 닫아 둔 동안 서버에서 영상을 받아 주는 기능은 제공하지 않습니다.
-- **변환** 탭에서 기기의 영상을 선택하거나 다른 앱에서 영상을 공유해 오디오를 추출할 수 있습니다.
-- 저장 형식은 설정에서 **Original**, **WAV**, **MP3** 중 선택하며, 봇 저장과 영상 변환에 함께 적용됩니다.
-- **보관함**에서 저장한 오디오를 재생하고 공유하거나 다른 폴더로 내보낼 수 있습니다.
-
-### Telegram 봇 연결
-
-봇 기능은 선택 사항입니다. 사용하려면 Telegram의 [@BotFather](https://t.me/BotFather)에서 봇을 만들고, [my.telegram.org](https://my.telegram.org/apps)에서 `api_id`와 `api_hash`를 발급받으세요. 앱의 **봇** 탭에 봇 토큰과 두 값을 입력해 연결한 뒤, 앱에서 연 봇 대화에서 **Start**를 누르고 영상을 전달하면 됩니다.
-
-봇 토큰과 `api_hash`는 비밀 정보입니다. 앱은 이 기기의 Android Keystore를 사용해 연결 정보를 암호화합니다. 봇은 Telegram이 전달을 허용하는 메시지만 받을 수 있으며, 보호된 콘텐츠는 전달할 수 없습니다. 이 연결은 개인 Telegram 계정 로그인 정보를 사용하지 않습니다.
-
-### 오디오 저장 형식
-
-- **Original**은 지원되는 오디오 스트림을 다시 인코딩하지 않고 복사합니다. 출력 컨테이너나 메타데이터는 달라질 수 있습니다.
-- **WAV**는 32비트 부동소수점 PCM으로 저장합니다. 원본에서 손실된 정보를 복구하지는 않으며 파일 크기가 커질 수 있습니다.
-- **MP3**는 LAME의 최고 VBR 품질 설정으로 다시 인코딩하는 손실 형식입니다.
-
-형식 설정은 저장 결과에 적용됩니다. 재생은 원본 오디오를 사용하며 음량 정규화나 업샘플링은 하지 않습니다.
 
 ## What it does
 
@@ -85,7 +64,7 @@ See the [latest GitHub release](https://github.com/Polarfox0317/sikboonge/releas
 
 ## Verification status
 
-Version `1.0.0` compiled for both debug and release, and `testKotlin` passed 44 unit tests. On an Android emulator, the synthetic `0.9` to `1.0` import/upgrade check passed (1 check), and the Android fixture checks passed (5 checks). These results apply to `1.0.0` only; the `1.0.1` verification above is separate.
+Version `1.0.0` compiled for both debug and release, and `testKotlin` passed 44 unit tests. On an Android emulator, the synthetic `0.9` to `1.0` import/upgrade check passed (1 check), and the Android fixture checks passed (5 checks). These results apply to `1.0.0` only; the `1.0.1` verification below is separate.
 
 For version `1.0.1` (version code `110`), the curated public source compiled the release variant. The release APK was verified with `apksigner` using the project release certificate. No installation, visual review, or Telegram end-to-end verification was performed for code `110`.
 
@@ -98,5 +77,3 @@ Bot credentials are encrypted with Android Keystore on the device. Version `1.0.
 See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md), the [`third-party source notes`](docs/THIRD_PARTY_SOURCE.md), and the `licenses/` directory for dependency provenance and included notices. The app uses FFmpegKit Audio, FFmpeg, LAME, TDLib Android Core, AndroidX, Compose, Media3, and Kotlin components.
 
 The app-authored code, documentation, and project-owned branding assets of sikboonge are licensed under the [MIT License](LICENSE), Copyright (c) 2026 Polarfox0317. Third-party components retain their own licenses: Material icons and Gradle wrapper files are Apache-2.0; FFmpegKit Audio and its LGPL components, TDLib, and other dependencies remain subject to their respective terms. MIT does not replace those terms or the obligations when distributing a binary. See the the included license and source notices for the evidence and its limits. The resolved FFmpegKit AAR matches the upstream release asset byte for byte; a corresponding-source archive for its pinned FFmpegKit and audio component sources is prepared under `artifacts/third-party-source/`. A source rebuild and modified-library replacement/reinstallation have not been verified; see [third-party source notes](docs/THIRD_PARTY_SOURCE.md).
-
-
