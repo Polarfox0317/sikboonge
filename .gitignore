@@ -1,0 +1,54 @@
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+
+# Operating system metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editor workspace and temporary files
+.idea/workspace.xml
+.idea/tasks.xml
+.idea/shelf/
+.idea/httpRequests/
+.vscode/*.log
+*.swp
+*.swo
+*~
+
+# Android generated/local files
+.gradle/
+.kotlin/
+**/build/
+local.properties
+*.jks
+*.keystore
+/.tools/
+/.codex-remote-attachments/
+/.publish-staging/
+/artifacts/qa/
+/artifacts/*.apk
+/.migration-private/
+/.private-signing/
+/artifacts/private-signing/
+
+# Android review outputs and signing sidecars
+/artifacts/**/*.apk
+/artifacts/**/*.apk.idsig
+/artifacts/**/*.log
+/artifacts/ui-*/
+/artifacts/clip-frames/
+
+# Local UI review APKs and screenshot capture intermediates
+/artifacts/ui-*/before-apk/
+/artifacts/ui-*/interim-full-window/
+
+# Private migration/signing state is never part of a public source export
+/.migration-private/
+/.private-signing/
+/artifacts/private-signing/
+
+# Local exporter ownership metadata
+/.public-export-manifest.json

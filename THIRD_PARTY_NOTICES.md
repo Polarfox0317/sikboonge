@@ -1,0 +1,28 @@
+# Third-party notices and source provenance
+
+The app-authored portions of **sikboonge** are licensed under the root [MIT License](LICENSE), Copyright (c) 2026 Polarfox0317. External code, icons, wrapper files, dependency binaries, and imported reference material retain their original licenses and notices. This document does not relicense them. Evidence and remaining provenance limits are recorded in [licenses/](licenses/).
+
+## Runtime dependencies
+
+* FFmpegKit Audio 8.1.7: Maven Central coordinate `dev.ffmpegkit-maintained:ffmpeg-kit-audio:8.1.7`. Source and build scripts: https://github.com/ffmpegkit-maintained/ffmpeg; versioned releases: https://github.com/ffmpegkit-maintained/ffmpeg/releases. LGPL-3.0. Original FFmpegKit by Arthenica: https://github.com/arthenica/ffmpeg-kit. Maintained continuation by Jokobee. This app uses the non-GPL audio variant containing LAME; no x264/x265 GPL variant is included. HTTPS input is transported by Android networking through an ephemeral app-local range bridge because this native package lacks HTTPS/TLS support. Native libraries remain shared `.so` files inside APK and can be replaced by rebuilding the provided Gradle project with an alternate compatible AAR. No FFmpegKit source modifications were made.
+* FFmpeg: https://ffmpeg.org/ and https://github.com/FFmpeg/FFmpeg. Version/build-date metadata is available through `FFmpegKitConfig.getFFmpegVersion()` / `getBuildDate()`; this does not identify every build flag or component license. Build configuration and corresponding source must be matched to the actual artifact. Packet streamcopy documentation: https://ffmpeg.org/ffmpeg.html#Streamcopy.
+* LAME MP3 encoder: https://lame.sourceforge.io/, LGPL. Included by the above audio AAR; source/build provenance belongs to its upstream build recipe.
+* Smart Exception Java 0.2.1: `com.arthenica:smart-exception-java:0.2.1`, https://github.com/arthenica/smart-exception, LGPL-3.0. Explicit upstream FFmpegKit API dependency, required because the maintained audio AAR's POM omits it.
+* TDLib Android Core 0.1.1: pinned Maven Central coordinate `io.github.tdlib-android:core:0.1.1`, community packaging source https://github.com/AkashPriyadarshii/tdlib-android, upstream Telegram Database Library source https://github.com/tdlib/td. Core TDLib is licensed under Boost Software License 1.0; the optional Kotlin wrapper is not included. The downloaded core AAR SHA-256 is `1EC6D6C6C83B655349D8A91182145CDD5400392246136AD79432253AD6004106`. This is a community-built JNI package, not an official Telegram-published Android AAR. No TDLib source modifications are made by this app.
+* AndroidX / Compose / Material 3 / Media3: https://android.googlesource.com/platform/frameworks/support/, Apache License 2.0. Kotlin/coroutines: https://github.com/JetBrains/kotlin and https://github.com/Kotlin/kotlinx.coroutines, Apache License 2.0. These are dependencies consumed by app code, not app-authored implementations licensed under MIT.
+
+The audio AAR also supplies codecs/support libraries with their own LGPL, BSD-style, and Apache terms. Retain its bundled `res/raw/license*.txt` resources and upstream [component notices](https://github.com/ffmpegkit-maintained/ffmpeg/blob/main/THIRD-PARTY-NOTICES.txt); the package's LGPL label does not replace those individual terms.
+
+## Imported icons and build tooling
+
+* Google Material Symbols / Material Icons: [official source and license](https://github.com/google/material-design-icons), Apache-2.0. The 39 source-commented files in `app/src/main/res/drawable/` import Material Symbols SVG geometry into Android vector resources. Local format, sizing, tint, and symbol-variant choices are adaptations; preserve the per-file source comments, applicable upstream notices, and `licenses/Apache-2.0.txt`. These icon paths are third-party assets, not MIT-authored branding.
+* Gradle wrapper: `gradlew`, `gradlew.bat`, and `gradle/wrapper/gradle-wrapper.jar` originate from [Gradle](https://github.com/gradle/gradle), Apache-2.0 with its third-party exceptions. The launchers retain Apache/SPDX headers. The wrapper distribution is pinned to 9.4.1; its JAR checksum was matched against the [official release checksums](https://gradle.org/release-checksums/). Preserve headers and applicable Gradle [license/notices](https://github.com/gradle/gradle/blob/v9.4.1/LICENSE).
+* JUnit 4.13.2: [upstream license](https://github.com/junit-team/junit4/blob/main/LICENSE-junit.txt), EPL-1.0, tests only. Dropshots 0.6.0: [upstream source/license](https://github.com/dropbox/dropshots), Apache-2.0, test library/build plugin. Neither is relicensed by the root MIT file.
+
+
+
+## Binary distribution and LGPL
+
+`licenses/` includes LGPL-3.0, GPL-3.0, LGPL-2.1, Apache-2.0, and BSL-1.0 texts; the GPL text accompanies LGPL-3.0 and does not establish that the app selected a GPL FFmpegKit variant. `app/build.gradle.kts` includes this directory as APK assets.
+
+MIT covers the app's own portions while LGPL obligations remain for the libraries, including unmodified binary redistribution. Retain license/copyright notices and provide the matching corresponding library source/build materials as required. For the combined application, LGPL-3.0 section 4 requires a permitted replacement/relinking route and, where applicable, installation information; restrictions must not prevent library modification or reverse engineering to debug it. This project supplies app source and a compatible-AAR rebuild route, but bundled shared `.so` files alone do not certify compliance. Exact release source/build archives and practical replacement/reinstallation instructions still need to accompany any binary release; none is certified by this source audit.

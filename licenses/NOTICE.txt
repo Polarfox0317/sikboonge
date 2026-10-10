@@ -1,0 +1,68 @@
+sikboonge app-authored code, documentation, and project-owned branding:
+MIT License, Copyright (c) 2026 Polarfox0317; see the repository root LICENSE.
+Third-party components below retain their own terms; MIT does not replace them.
+
+This application uses the Maven Central audio AAR:
+dev.ffmpegkit-maintained:ffmpeg-kit-audio:8.1.7
+FFmpegKit Audio package: LGPL-3.0, see LGPL-3.0.txt and GPL-3.0.txt.
+FFmpeg, LAME, and other bundled libraries retain their applicable upstream terms.
+Keep the AAR's res/raw/license*.txt resources and component notices.
+Source and build materials: https://github.com/ffmpegkit-maintained/ffmpeg
+Release artifacts: https://github.com/ffmpegkit-maintained/ffmpeg/releases
+Original FFmpegKit copyright Arthenica; maintained continuation by Jokobee.
+FFmpeg source: https://github.com/FFmpeg/FFmpeg
+LAME source: https://lame.sourceforge.io/
+Native libraries are dynamically linked shared objects. App sources and
+Gradle configuration allow rebuilding/relinking against a compatible AAR.
+The configured dependency is the non-GPL audio variant, not a -gpl variant.
+Cached libavcodec build strings for both configured ABIs contain neither
+--enable-gpl nor --enable-nonfree; a future APK was not inspected by this audit.
+Smart Exception Java 0.2.1, LGPL-3.0: https://github.com/arthenica/smart-exception
+AndroidX, Compose, Material3, Media3, Kotlin and coroutines: Apache-2.0.
+Material toolbar/navigation vector icons: Google Material Icons / Material Symbols, Apache-2.0.
+Source: https://github.com/google/material-design-icons
+Vector paths packaged as local Android drawables; see Apache-2.0.txt.
+SVG geometry is converted/adapted to Android vectors; preserve source comments.
+Project-owned mascot artwork and the separately authored monochrome branding
+vector are distinct from these Google-sourced icons.
+TDLib Android Core 0.1.1: io.github.tdlib-android:core:0.1.1, Boost Software License 1.0.
+Upstream source: https://github.com/tdlib/td
+Community Android packaging: https://github.com/AkashPriyadarshii/tdlib-android
+This app includes core Java/JNI only; the optional Kotlin wrapper is not included.
+Core AAR SHA-256: 1EC6D6C6C83B655349D8A91182145CDD5400392246136AD79432253AD6004106
+
+Gradle launchers and wrapper JAR: Gradle upstream, Apache-2.0 with upstream
+third-party exceptions. Preserve launcher copyright/SPDX headers and notices.
+Source/license: https://github.com/gradle/gradle/blob/v9.4.1/LICENSE
+JUnit 4.13.2: EPL-1.0, test dependency only: https://github.com/junit-team/junit4
+Dropshots 0.6.0: Apache-2.0, test/build tooling: https://github.com/dropbox/dropshots
+
+Library binary redistribution, even unmodified, retains corresponding-source
+and notice obligations. LGPL-3.0 section 4 also governs replacement/relinking,
+reverse engineering for library debugging, and applicable installation details.
+Shared objects plus app source are not a complete release-compliance finding.
+See repository THIRD_PARTY_NOTICES.md for scope.
+
+MIT license for the app-authored portions of sikboonge only:
+
+MIT License
+
+Copyright (c) 2026 Polarfox0317
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
