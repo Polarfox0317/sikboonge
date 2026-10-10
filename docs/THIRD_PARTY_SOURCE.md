@@ -1,23 +1,26 @@
-# FFmpegKit source retrieval notes
+# FFmpegKit source and relinking notes
 
-The project declares `dev.ffmpegkit-maintained:ffmpeg-kit-audio:8.1.7`. The maintained source repository has a matching version tag at commit `62b07bf097baf26b416c815aea514e05c9ad6d63`:
+The app resolves `dev.ffmpegkit-maintained:ffmpeg-kit-audio:8.1.7` from Maven Central. The artifact POM identifies the maintained source repository as `ffmpegkit-maintained/ffmpeg`. Its Android release tag `v8.1.7-lts-android` resolves to source commit `12fd7ca207444e98015e7d24cd91c31abce34c31`:
 
-- Repository: <https://github.com/ffmpegkit-maintained/ffmpeg>
-- Tag: [`v8.1.7`](https://github.com/ffmpegkit-maintained/ffmpeg/tree/v8.1.7)
-- Pinned checkout: <https://github.com/ffmpegkit-maintained/ffmpeg/tree/62b07bf097baf26b416c815aea514e05c9ad6d63>
-- Source retrieval/build instructions: [`android-8.1-lts/README.md`](https://github.com/ffmpegkit-maintained/ffmpeg/blob/62b07bf097baf26b416c815aea514e05c9ad6d63/android-8.1-lts/README.md)
-- External component source pins and retrieval script: [`android-8.1-lts/scripts/source.sh`](https://github.com/ffmpegkit-maintained/ffmpeg/blob/62b07bf097baf26b416c815aea514e05c9ad6d63/android-8.1-lts/scripts/source.sh)
+- [Release tag and source tree](https://github.com/ffmpegkit-maintained/ffmpeg/tree/v8.1.7-lts-android)
+- [Immutable source commit](https://github.com/ffmpegkit-maintained/ffmpeg/tree/12fd7ca207444e98015e7d24cd91c31abce34c31)
+- [Android 8.1 LTS README](https://github.com/ffmpegkit-maintained/ffmpeg/blob/12fd7ca207444e98015e7d24cd91c31abce34c31/android-8.1-lts/android/README.md)
+- [External component source pins](https://github.com/ffmpegkit-maintained/ffmpeg/blob/12fd7ca207444e98015e7d24cd91c31abce34c31/android-8.1-lts/scripts/source.sh)
+- [Source ZIP for the release commit](https://github.com/ffmpegkit-maintained/ffmpeg/archive/12fd7ca207444e98015e7d24cd91c31abce34c31.zip)
 
-To retrieve this exact repository revision:
+The GitHub release ZIP contains the FFmpegKit Android source, build scripts, configuration and component pin table. The audio AAR's bundled license resources identify its included native components; its `libavcodec.so` configure strings for both ABIs confirm FFmpeg `n8.1.2`, libmp3lame, iconv, libvorbis, opencore-amrnb, shine, speex, libilbc, opus, soxr, twolame, vo-amrwbenc, zlib, and Android MediaCodec. A corresponding-source bundle has been assembled at `artifacts/third-party-source/ffmpeg-kit-audio-8.1.7-corresponding-source.zip`. It contains the immutable FFmpegKit release source tree and source archives for all dependency sources listed in the AAR license resources and source pin table, along with POM/Java sources and a SHA-256 manifest. Preserve each upstream component's license and notices. The release source scripts pin FFmpeg `n8.1.2` and LAME `RELEASE__3_100`; use the pinned Android README for build prerequisites and options.
 
-```sh
-git clone https://github.com/ffmpegkit-maintained/ffmpeg.git
-cd ffmpeg
-git checkout --detach 62b07bf097baf26b416c815aea514e05c9ad6d63
-```
+## Artifact checks
 
-The checked-in Android 8.1 LTS source-fetch and build scripts document the external component revisions and obtain those sources as part of the build workflow. Follow the README at that pinned commit for its prerequisites and build commands; preserve the retrieved upstream files and their individual licenses/notices when preparing a corresponding-source bundle.
+- The Maven POM publishes the source SCM URL and declares LGPL-3.0, but no native-source attachment. Maven Central's `ffmpeg-kit-audio-8.1.7-sources.jar` contains Java API sources only; it does not contain the native libraries' C/C++ sources.
+- The downloaded Maven AAR and the `ffmpeg-kit-audio-8.1.7-arm64-v8a-x86_64.aar` attached to upstream release `v8.1.7-lts-android` have identical SHA-256: `9b277de25934594635a495e4fda164b902309219a2f538827f5ecc7ed77229d6`.
+- The AAR's bundled `res/raw/source.txt` still points to the archived Arthenica wiki. The maintained release's versioned repository, build workflow, and component source pins provide the more specific retrieval path above.
+- Do not confuse the separate `v8.1.7` tag (commit `62b07bf097baf26b416c815aea514e05c9ad6d63`, a later JitPack version-pin commit) with the release source tag `v8.1.7-lts-android`.
+- The source ZIP downloaded during this audit had SHA-256 `8a1355f24d9f7415c0dd974baec2c7f4272ee6b4c0ef459fd81cdd78d47fefd1`. GitHub generates source ZIPs, so identify the source by commit hash; the archive hash is only a retrieval check, not a publisher signature.
+- The release source package at `artifacts/third-party-source/ffmpeg-kit-audio-8.1.7-corresponding-source.zip` has SHA-256 `3e1dae181ff2b926b2dd298517bd2609cfe5ad2829c52fc10629131e1ccbe4c5`. It includes 16 version-pinned source archives, the FFmpegKit Android source ZIP, the Maven POM and Java source JAR, the AAR's license/source text resources, and `SHA256SUMS.txt`. Each external source archive is retrievable independently from its immutable commit URL in the included README. The earlier retrieval-only ZIP is superseded by this bundle.
 
-## Limits of this record
+## Replacement and remaining limits
 
-This is a reproducible way to retrieve a version-tagged upstream source tree and inspect its declared source pins. It does **not** prove that the published Maven AAR resolved by this app was built from this exact commit, source set, or configuration. The repository's source metadata includes a generic legacy `SOURCE` pointer, and the external component downloads are governed by the pinned scripts. No AAR-to-source binary comparison, complete corresponding-source bundle, or modified-library replacement/reinstallation procedure has been verified for this app. Do not treat this note alone as certification that a future binary distribution has met every LGPL obligation; complete those checks and provide the applicable relinking and installation route before distributing a binary.
+The Gradle project links the native shared libraries supplied by the AAR. A replacement workflow is to build a compatible LGPL audio AAR from the pinned recipe, substitute that AAR for `dev.ffmpegkit-maintained:ffmpeg-kit-audio:8.1.7`, rebuild/relink the app, sign the resulting APK with the release key, and install the modified app. This procedure has not been exercised or verified for the release APK. Because Android restricts updates to matching signatures, users who cannot use the maintainer's signing key would need an install path that permits installing the modified app (typically uninstalling the existing package first); that can remove app-private data. The app's migration export/import can preserve supported user data when available, but the end-to-end replacement-and-install route has not yet been tested.
+
+The release asset hash comparison identifies the exact AAR Maven resolved and ties it to the upstream release binary. The accompanying corresponding-source archive includes all native source pins recorded for this audio variant, with integrity hashes and license-bearing upstream archives. This audit did not rebuild the AAR from the pinned source, compare object files, or test the modified-library replacement/reinstallation path. Include the corresponding-source ZIP with any APK release and verify the supported replacement/reinstallation path before claiming binary-distribution compliance. This note and archive document corresponding source but are not a certification of every LGPL condition.
