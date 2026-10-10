@@ -53,7 +53,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /** Activity-scoped state owner. Construction/rebinding never starts playback or conversion. */
-class AppController(context: Context, scope: CoroutineScope? = null) : ViewModel(), AppActions {
+class AppController(
+    context: Context,
+    scope: CoroutineScope? = null,
+    private val botState: StateFlow<BotUiState> = BotRuntime.state,
+) : ViewModel(), AppActions {
     private val appContext = context.applicationContext
     private val savedUiPreferences = appContext.getSharedPreferences("sikboonge_ui_preferences", Context.MODE_PRIVATE)
     private val controllerJob = SupervisorJob(scope?.coroutineContext?.get(Job))
@@ -72,21 +76,22 @@ class AppController(context: Context, scope: CoroutineScope? = null) : ViewModel
     private var selectedVideoGeneration = 0L
     private var preservePlayerSizeSourceKey: String? = null
     private var preservePlayerSizeBotQueueKey: String? = null
+    private var lastAnnouncedBotSaveCompletionId = AppStore.state.value.botSaveCompletionId
 
     val actions: AppActions = this
     val messages: SharedFlow<UiMessage> = mutableMessages.asSharedFlow()
     val uiState: StateFlow<AppUiState> = combine(
-        interaction, AppStore.state, AppStore.history, StreamPlayback.state, BotRuntime.state,
+        interaction, AppStore.state, AppStore.history, StreamPlayback.state, botState,
     ) { input, conversion, history, stream, bot ->
         input.snapshot(conversion, history, stream, bot)
     }.stateIn(
         controllerScope, SharingStarted.Eagerly,
-        interaction.value.snapshot(AppStore.state.value, AppStore.history.value, StreamPlayback.state.value, BotRuntime.state.value),
+        interaction.value.snapshot(AppStore.state.value, AppStore.history.value, StreamPlayback.state.value, botState.value),
     )
 
     init {
         controllerScope.launch {
-            combine(AppStore.state, BotRuntime.state) { conversion, bot -> conversion to bot }
+            combine(AppStore.state, botState) { conversion, bot -> conversion to bot }
                 .collect { (conversion, bot) ->
                     interaction.update { input ->
                         input.copy(
@@ -94,7 +99,7 @@ class AppController(context: Context, scope: CoroutineScope? = null) : ViewModel
                                 conversion.running || bot.error != null || !bot.connected
                             },
                             playerSaveSourceKey = input.playerSaveSourceKey.takeIf { conversion.running },
-                            botSetupRequested = input.botSetupRequested && !(bot.connected && bot.paired),
+                            botSetupRequested = input.botSetupRequested && !bot.connected,
                         )
                     }
                 }
@@ -105,7 +110,7 @@ class AppController(context: Context, scope: CoroutineScope? = null) : ViewModel
                 val botQueueKey = preservePlayerSizeBotQueueKey
                 // TDLib can assign a new file ID while resolving the same queued message.
                 val sameQueuedBotMessage = botQueueKey != null && stream.source == PlaybackSource.BOT &&
-                    BotRuntime.state.value.videos.any { it.fileId == stream.botFileId && queueItem(it).key == botQueueKey }
+                    botState.value.videos.any { it.fileId == stream.botFileId && queueItem(it).key == botQueueKey }
                 val keepPlayerSize = key == preservePlayerSizeSourceKey || sameQueuedBotMessage
                 if (keepPlayerSize || key != lastPlayerSourceKey) clearQueuePlaybackPreference()
                 if (key != lastPlayerSourceKey) {
@@ -113,7 +118,7 @@ class AppController(context: Context, scope: CoroutineScope? = null) : ViewModel
                     interaction.update { input ->
                         if (key.isEmpty()) input.copy(playerExpanded = true, queueIndex = -1, queueResumeIndex = 0, queueVisible = false, queueEditing = false, queueSelectedKeys = emptySet())
                         else {
-                            val resolvedBotKeys = if (stream.source == PlaybackSource.BOT) BotRuntime.state.value.videos
+                            val resolvedBotKeys = if (stream.source == PlaybackSource.BOT) botState.value.videos
                                 .filter { it.fileId == stream.botFileId }.mapTo(mutableSetOf()) { queueItem(it).key } else emptySet()
                             val queue = input.queue.map { item ->
                                 if (item.key in resolvedBotKeys) item.copy(botFileId = stream.botFileId) else item
@@ -133,7 +138,7 @@ class AppController(context: Context, scope: CoroutineScope? = null) : ViewModel
             }
         }
         controllerScope.launch {
-            BotRuntime.state.map { it.videos }.distinctUntilChanged().collect { videos ->
+            botState.map { it.videos }.distinctUntilChanged().collect { videos ->
                 if (videos.isNotEmpty()) withContext(Dispatchers.IO) {
                     // Same migration as the former LaunchedEffect(bot.videos); no fixture branches.
                     runCatching { AppStore.attachMissingArtwork(appContext, videos) }
@@ -143,7 +148,7 @@ class AppController(context: Context, scope: CoroutineScope? = null) : ViewModel
         controllerScope.launch {
             var initialEmission = true
             val announcedDiagnostics = mutableSetOf<String>()
-            BotRuntime.state.map { it.receiveDiagnostic.trim() }.distinctUntilChanged().collect { diagnostic ->
+            botState.map { it.receiveDiagnostic.trim() }.distinctUntilChanged().collect { diagnostic ->
                 if (initialEmission) {
                     initialEmission = false
                     if (diagnostic.isNotBlank()) announcedDiagnostics.add(diagnostic)
@@ -153,7 +158,7 @@ class AppController(context: Context, scope: CoroutineScope? = null) : ViewModel
             }
         }
         controllerScope.launch {
-            BotRuntime.state.map { it.error }.distinctUntilChanged().collect { error ->
+            botState.map { it.error }.distinctUntilChanged().collect { error ->
                 error?.let { notice(it, true, UserFacingErrors.Context.TELEGRAM) }
             }
         }
@@ -172,12 +177,12 @@ class AppController(context: Context, scope: CoroutineScope? = null) : ViewModel
                 }
         }
         controllerScope.launch {
-            AppStore.state.map { Triple(it.error, it.result, it.stage.takeIf { stage -> stage == "취소했어요" }) }
-                .distinctUntilChanged().collect { (error, result, cancelled) ->
-                    when {
-                        error != null -> notice(error, true)
-                        result != null -> notice("추출 완료 · 보관함에서 재생, 저장, 공유할 수 있어요.")
-                        cancelled != null -> notice(cancelled)
+            AppStore.state.map { it.origin to it.botSaveCompletionId }
+                .distinctUntilChanged().collect { (origin, completionId) ->
+                    if (origin == io.github.polarfox0317.sikboonge.ConversionOrigin.BOT_SAVE &&
+                        completionId != null && completionId != lastAnnouncedBotSaveCompletionId) {
+                        lastAnnouncedBotSaveCompletionId = completionId
+                        notice("오디오를 보관함에 저장했어요.")
                     }
                 }
         }
@@ -248,7 +253,7 @@ class AppController(context: Context, scope: CoroutineScope? = null) : ViewModel
         lastPlayerSourceKey = currentSourceKey
         val restoredQueue = run {
             val candidates = (AppStore.history.value + listOfNotNull(AppStore.state.value.result)).map(::queueItem) +
-                BotRuntime.state.value.videos.map(::queueItem)
+                botState.value.videos.map(::queueItem)
             saved.getStringArrayList("queueKeys").orEmpty().mapNotNull { key -> candidates.firstOrNull { it.key == key } }
         }
         val savedQueueIndex = restoredQueue.indexOfFirst { it.key == saved.getString("queueCurrentKey") }
@@ -275,7 +280,7 @@ class AppController(context: Context, scope: CoroutineScope? = null) : ViewModel
                 "convert", "listen" -> Destination.Convert
                 else -> Destination.Bot
             },
-            botSetupRequested = saved.getBoolean("botSetupRequested") && !BotRuntime.state.value.let { bot -> bot.connected && bot.paired },
+            botSetupRequested = saved.getBoolean("botSetupRequested") && !botState.value.connected,
             playerExpanded = if (sameSource) saved.getBoolean("playerExpanded", true) else true,
             playerSaveSourceKey = saved.getString("playerSaveSourceKey").takeIf { AppStore.state.value.running },
             queue = restoredQueue,
@@ -411,7 +416,7 @@ class AppController(context: Context, scope: CoroutineScope? = null) : ViewModel
             selectedAudioPaths = if (it.selectionMode) it.selectedAudioPaths.intersect(visiblePaths) else it.selectedAudioPaths) }
     }
 
-    override fun onBotQueryChanged(query: ListQuery) = updateBotQuery(query, BotRuntime.state.value.videos)
+    override fun onBotQueryChanged(query: ListQuery) = updateBotQuery(query, botState.value.videos)
 
     internal fun updateBotQuery(query: ListQuery, items: List<BotVideo>) {
         val visibleIds = filterBot(items, query).mapTo(mutableSetOf(), BotVideo::messageId)
@@ -549,7 +554,7 @@ class AppController(context: Context, scope: CoroutineScope? = null) : ViewModel
                     notice(LocalPlaybackPolicy.INVALID_AUDIO_ERROR, true, UserFacingErrors.Context.LOCAL_MEDIA)
                 }
                 PlaybackSource.BOT -> {
-                    val video = BotRuntime.state.value.videos.firstOrNull {
+                    val video = botState.value.videos.firstOrNull {
                         if (item.botMessageId != null) it.messageId == item.botMessageId && it.chatId == item.botChatId
                         else it.fileId == item.botFileId
                     }
@@ -606,7 +611,7 @@ class AppController(context: Context, scope: CoroutineScope? = null) : ViewModel
         when {
             stream.source == PlaybackSource.LOCAL_AUDIO -> currentAudioResult(stream)?.let { StreamPlayback.playLocal(appContext, it) }
             stream.source == PlaybackSource.BOT -> stream.botFileId?.let { fileId ->
-                BotRuntime.state.value.videos.firstOrNull { it.fileId == fileId }?.let(::playBotVideo)
+                botState.value.videos.firstOrNull { it.fileId == fileId }?.let(::playBotVideo)
             }
         }
     }
@@ -623,7 +628,7 @@ class AppController(context: Context, scope: CoroutineScope? = null) : ViewModel
                 }
             }
             stream.source == PlaybackSource.BOT -> {
-                val video = stream.botFileId?.let { fileId -> BotRuntime.state.value.videos.firstOrNull { it.fileId == fileId } }
+                val video = stream.botFileId?.let { fileId -> botState.value.videos.firstOrNull { it.fileId == fileId } }
                 if (video == null) notice("봇 목록에서 영상을 다시 선택해 주세요.", true)
                 else onExternalPlayBotVideo(video)
             }
@@ -634,7 +639,7 @@ class AppController(context: Context, scope: CoroutineScope? = null) : ViewModel
         // Freeze source metadata now; later UI changes cannot retarget this save.
         val stream = StreamPlayback.state.value
         val botFileId = stream.botFileId ?: return
-        if (stream.source != PlaybackSource.BOT || AppStore.state.value.running || !BotRuntime.state.value.connected) return
+        if (stream.source != PlaybackSource.BOT || AppStore.state.value.running || !botState.value.connected) return
         val input = interaction.value
         val request = conversionIntent(input.saveFormat)
             .putExtra("name", stream.title)
@@ -715,7 +720,7 @@ class AppController(context: Context, scope: CoroutineScope? = null) : ViewModel
                 interaction.update { it.copy(selectedAudioPaths = if (paths.isNotEmpty() && it.selectedAudioPaths.containsAll(paths)) emptySet() else paths) }
             }
             Destination.Bot -> {
-                val ids = filterBot(BotRuntime.state.value.videos, interaction.value.botQuery).mapTo(mutableSetOf(), BotVideo::messageId)
+                val ids = filterBot(botState.value.videos, interaction.value.botQuery).mapTo(mutableSetOf(), BotVideo::messageId)
                 interaction.update { it.copy(selectedBotMessageIds = if (ids.isNotEmpty() && it.selectedBotMessageIds.containsAll(ids)) emptySet() else ids) }
             }
             else -> Unit
@@ -725,7 +730,6 @@ class AppController(context: Context, scope: CoroutineScope? = null) : ViewModel
 
     override fun onConnectBot(credentials: BotCredentials) {
         val submitted = credentials.copy(apiHash = credentials.apiHash.trim(), token = credentials.token.trim())
-        interaction.update { it.copy(botApiIdText = "", botApiHash = "", botToken = "") }
         BotRuntime.connect(appContext, submitted)
     }
     override fun onDisconnectBot() {
@@ -735,8 +739,8 @@ class AppController(context: Context, scope: CoroutineScope? = null) : ViewModel
     }
     override fun onPairBot() = BotRuntime.pair(appContext)
     override fun onRefreshBot() {
-        val bot = BotRuntime.state.value
-        if (interaction.value.destination == Destination.Bot && bot.setupComplete && bot.connected && bot.paired && !bot.busy && !bot.refreshing) BotRuntime.refreshInbox(appContext)
+        val bot = botState.value
+        if (interaction.value.destination == Destination.Bot && bot.connected && bot.paired && !bot.busy && !bot.refreshing) BotRuntime.refreshInbox(appContext)
     }
     override fun onSaveBotVideo(video: BotVideo, format: AudioFormat) {
         if (!canUseBotVideo(video) || AppStore.state.value.running || interaction.value.preparingBotSaveMessageId != null) return
@@ -758,7 +762,7 @@ class AppController(context: Context, scope: CoroutineScope? = null) : ViewModel
     }
     override fun onRequestBotDelete(messageIds: Set<Long>) { interaction.update { it.copy(pendingBotDelete = messageIds.toSet().takeIf(Set<Long>::isNotEmpty)) } }
     override fun onConfirmBotDelete(messageIds: Set<Long>) {
-        val targets = BotRuntime.state.value.videos.filter { it.messageId in messageIds }
+        val targets = botState.value.videos.filter { it.messageId in messageIds }
         if (targets.isEmpty()) {
             interaction.update { it.copy(pendingBotDelete = null) }
             notice("봇 목록이 바뀌어 선택한 항목을 찾지 못했어요. 목록을 확인해 주세요.", true)
@@ -786,7 +790,7 @@ class AppController(context: Context, scope: CoroutineScope? = null) : ViewModel
     override fun onExportDiagnostics() { hostEffects?.takeIf(HostEffects::diagnosticsAvailable)?.exportDiagnostics() }
     override fun onOpenExternalUrl(url: String) { runCatching { hostEffects?.openExternalUrl(url) } }
 
-    private fun canUseBotVideo(video: BotVideo): Boolean = BotRuntime.state.value.let { it.connected && !it.busy && !video.needsForward }
+    private fun canUseBotVideo(video: BotVideo): Boolean = botState.value.let { it.connected && !it.busy && !video.needsForward }
 
     private fun readVideoMetadata(uri: Uri): SelectedVideoMetadata {
         var name = "선택한 영상"
@@ -829,9 +833,14 @@ class AppController(context: Context, scope: CoroutineScope? = null) : ViewModel
     }
     private fun conversionIntent(format: AudioFormat) = Intent(appContext, ConversionService::class.java).putExtra("format", format.name)
     private fun startConversion(request: Intent, stage: String, failure: String) {
-        AppStore.state.value = ConversionState(running = true, stage = stage)
+        val origin = if (request.getIntExtra(BotRuntime.EXTRA_TDLIB_FILE_ID, 0) > 0) {
+            io.github.polarfox0317.sikboonge.ConversionOrigin.BOT_SAVE
+        } else {
+            io.github.polarfox0317.sikboonge.ConversionOrigin.LOCAL_CONVERT
+        }
+        AppStore.state.value = ConversionState(origin = origin, running = true, stage = stage)
         try { appContext.startForegroundService(request) }
-        catch (_: Exception) { AppStore.state.value = ConversionState(error = failure) }
+        catch (_: Exception) { AppStore.state.value = ConversionState(origin = origin, error = failure) }
     }
     private fun notice(text: String, error: Boolean = false, context: UserFacingErrors.Context = UserFacingErrors.Context.GENERAL) {
         val sanitized = if (error) UserFacingErrors.fromErrorString(text, context) ?: return else text
@@ -866,12 +875,16 @@ class AppController(context: Context, scope: CoroutineScope? = null) : ViewModel
 }
 
 /** Use ViewModelProvider(activity, AppControllerFactory(activity.applicationContext))[AppController::class.java]. */
-class AppControllerFactory(context: Context, private val scope: CoroutineScope? = null) : ViewModelProvider.Factory {
+class AppControllerFactory(
+    context: Context,
+    private val scope: CoroutineScope? = null,
+    private val botStateOverride: StateFlow<BotUiState>? = null,
+) : ViewModelProvider.Factory {
     private val appContext = context.applicationContext
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         require(modelClass.isAssignableFrom(AppController::class.java)) { "Unknown ViewModel class: ${modelClass.name}" }
         @Suppress("UNCHECKED_CAST")
-        return AppController(appContext, scope) as T
+        return AppController(appContext, scope, botStateOverride ?: BotRuntime.state) as T
     }
 }
 

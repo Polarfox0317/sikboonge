@@ -2,6 +2,9 @@ package io.github.polarfox0317.sikboonge
 
 /** Small state decisions for restoring the private inbox around TDLib connection changes. */
 internal object BotInboxRecoveryPolicy {
+    fun initialStateLoaded(state: BotUiState): BotUiState =
+        if (state.initialStateLoaded) state else state.copy(initialStateLoaded = true)
+
     fun restoreRows(
         rows: List<BotVideo>,
         tombstones: Set<BotMessageKey>,

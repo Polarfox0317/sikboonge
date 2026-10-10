@@ -10,7 +10,6 @@ import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
-import javax.crypto.spec.GCMParameterSpec
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -37,8 +36,11 @@ internal class BotPrivateStore(
     context: Context,
     preferencesName: String = PREFS,
     private val keyAlias: String = KEY_ALIAS,
+    legacyAlias: String? = null,
 ) {
     private val prefs = context.applicationContext.getSharedPreferences(preferencesName, Context.MODE_PRIVATE)
+    // Read fallback is disabled; the legacy alias is retained only for explicit clear().
+    private val legacyKeyAlias = legacyAlias ?: if (keyAlias == KEY_ALIAS) LEGACY_KEY_ALIAS else "$keyAlias.legacy"
     private data class InboxData(val videos: List<BotVideo>, val tombstones: Set<BotMessageKey>)
 
     var pendingNonce: String?
@@ -100,10 +102,10 @@ internal class BotPrivateStore(
 
     @Synchronized
     fun clear() = synchronized(INBOX_LOCK) {
-        check(prefs.edit().clear().commit()) { "Could not clear private Telegram bot state" }
-        runCatching {
-            val store = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-            if (store.containsAlias(keyAlias)) store.deleteEntry(keyAlias)
+        KeystoreAliasMigration.withLock {
+            check(prefs.edit().clear().commit()) { "Could not clear private Telegram bot state" }
+            removeAlias(keyAlias)
+            removeAlias(legacyKeyAlias)
         }
     }
 
@@ -140,6 +142,24 @@ internal class BotPrivateStore(
             )
         } }.takeLast(MAX_VIDEOS)
 
+    private fun validateMigrationField(name: String, bytes: ByteArray) {
+        val value = bytes.toString(Charsets.UTF_8)
+        when (name) {
+            KEY_DB_KEY -> require(bytes.size >= 32)
+            KEY_VIDEOS -> {
+                if (value.trimStart().startsWith("[")) readVideoRows(JSONArray(value))
+                else {
+                    val root = JSONObject(value)
+                    readVideoRows(root.optJSONArray("videos") ?: JSONArray())
+                    root.optJSONArray("tombstones") ?: JSONArray()
+                }
+            }
+            "nonce_created", "user", "chat" -> if (value.isNotEmpty()) require(value.toLongOrNull() != null)
+            "nonce" -> Unit
+            else -> error("Unknown private Telegram state field")
+        }
+    }
+
     private fun writeInbox(videos: List<BotVideo>, tombstones: Set<BotMessageKey>) {
         val rows = JSONArray().apply {
             videos.takeLast(MAX_VIDEOS).forEach { video -> put(JSONObject()
@@ -168,23 +188,22 @@ internal class BotPrivateStore(
     private fun writeLong(key: String, value: Long) = writeString(key, value.takeIf { it != 0L }?.toString())
 
     private fun readEncryptedStrict(name: String): ByteArray? {
-        if (!prefs.contains(name)) return null
-        return readEncrypted(name) ?: throw IllegalStateException("Could not read encrypted private Telegram state")
+        val current = try {
+            // Disabled legacy migration call; re-enable only for a confirmed compatibility release:
+            // KeystoreAliasMigration.migrateAndRead(prefs, keyAlias, legacyKeyAlias, ENCRYPTED_FIELDS, ::validateMigrationField)
+            KeystoreAliasMigration.readCurrentOnly(prefs, keyAlias, ENCRYPTED_FIELDS, ::validateMigrationField)
+        } catch (_: Exception) {
+            throw IllegalStateException("Could not read encrypted private Telegram state")
+        }
+        val requested = current[name]
+        current.filterKeys { it != name }.values.forEach { it.fill(0) }
+        return requested
     }
 
-    private fun readEncrypted(name: String): ByteArray? {
-        val encoded = prefs.getString(name, null) ?: return null
-        return runCatching {
-            val packed = Base64.decode(encoded, Base64.NO_WRAP)
-            require(packed.size > IV_BYTES)
-            val cipher = Cipher.getInstance(TRANSFORMATION)
-            val key = getExistingKey() ?: return null
-            cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_BITS, packed.copyOfRange(0, IV_BYTES)))
-            cipher.doFinal(packed.copyOfRange(IV_BYTES, packed.size))
-        }.getOrNull()
-    }
-
-    private fun writeEncrypted(name: String, plain: ByteArray) {
+    private fun writeEncrypted(name: String, plain: ByteArray) = KeystoreAliasMigration.withLock {
+        // Refuse to write any private field while another current-alias record is unreadable.
+        KeystoreAliasMigration.readCurrentOnly(prefs, keyAlias, ENCRYPTED_FIELDS, ::validateMigrationField)
+            .values.forEach { it.fill(0) }
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
         val encrypted = cipher.doFinal(plain)
@@ -209,10 +228,19 @@ internal class BotPrivateStore(
         return keyStore.getKey(keyAlias, null) as? SecretKey
     }
 
+    private fun removeAlias(alias: String) {
+        val store = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+        if (store.containsAlias(alias)) store.deleteEntry(alias)
+        check(!KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }.containsAlias(alias)) {
+            "Could not remove private Telegram key"
+        }
+    }
+
     private companion object {
         val INBOX_LOCK = Any()
         const val PREFS = "telegram_bot_private_v1"
         const val KEY_ALIAS = "io.github.polarfox0317.sikboonge.telegram.bot.private.v1"
+        const val LEGACY_KEY_ALIAS = "app.videoaudio.telegram.bot.private.v1"
         const val ANDROID_KEYSTORE = "AndroidKeyStore"
         const val TRANSFORMATION = "AES/GCM/NoPadding"
         const val IV_BYTES = 12
@@ -222,5 +250,6 @@ internal class BotPrivateStore(
         const val MAX_VIDEOS = 50
         const val MAX_MINI_BASE64_CHARS = 100_000
         const val INBOX_SCHEMA_VERSION = 3
+        val ENCRYPTED_FIELDS = setOf(KEY_DB_KEY, KEY_VIDEOS, "nonce", "nonce_created", "user", "chat")
     }
 }

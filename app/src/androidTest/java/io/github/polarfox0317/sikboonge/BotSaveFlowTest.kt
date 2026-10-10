@@ -67,6 +67,7 @@ class BotSaveFlowTest {
             context.startActivity(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             Thread.sleep(800)
             AppStore.state.value = ConversionState()
+            val existingHistoryPaths = AppStore.history.value.mapTo(mutableSetOf()) { it.path }
             val customTitle = "빗소리.2026 / night? " + "long".repeat(20)
             val renamedVideo = BotVideo(
                 fileId = 7,
@@ -79,10 +80,12 @@ class BotSaveFlowTest {
                 customTitle = customTitle,
             )
             startSave(context, 7, renamedVideo.displayName, listedSize = 2_324_555_125L)
-            assertTrue("Bot audio save did not finish", awaitState { !it.running && (it.result != null || it.error != null) })
+            assertTrue("Bot audio save did not finish", awaitState { !it.running && (it.botSaveCompletionId != null || it.error != null) })
             val completedState = AppStore.state.value
             assertNull(completedState.error)
-            saved = completedState.result
+            assertEquals(ConversionOrigin.BOT_SAVE, completedState.origin)
+            assertNull("Bot saves must not publish a local conversion result", completedState.result)
+            saved = AppStore.history.value.firstOrNull { it.path !in existingHistoryPaths }
             assertNotNull(saved)
             assertEquals("audio/mp4", saved!!.mime)
             val safeTitle = customTitle.replace(Regex("[\\\\/:*?\"<>|]"), "_").take(70)

@@ -38,6 +38,7 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
     private val io: ExecutorService = Executors.newSingleThreadExecutor { r -> Thread(r, "telegram-bot-runtime") }
     private val authScheduler = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "telegram-bot-auth-timeout").apply { isDaemon = true } }
     private val mutableState = MutableStateFlow(BotUiState())
+    private val setupLoadInFlight = AtomicBoolean(false)
     val state: StateFlow<BotUiState> = mutableState.asStateFlow()
 
     @Volatile private var appContext: Context? = null
@@ -98,20 +99,58 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
     fun setup(context: Context) {
         val app = context.applicationContext
         appContext = app
+        if (client != null) {
+            publish { BotInboxRecoveryPolicy.initialStateLoaded(this) }
+            return
+        }
+        if (!setupLoadInFlight.compareAndSet(false, true)) return
         io.execute {
-            if (client != null) return@execute
-            when (val result = runCatching { BotCredentialsStore(app).loadResult() }
-                .getOrElse { BotCredentialsReadResult.Unreadable }) {
-                BotCredentialsReadResult.Missing -> {
-                    publishCredentialRecoveryState(app, unreadable = false)
+            try {
+                if (client != null) {
+                    publish { BotInboxRecoveryPolicy.initialStateLoaded(this) }
                     return@execute
                 }
-                BotCredentialsReadResult.Unreadable -> {
-                    publishCredentialRecoveryState(app, unreadable = true)
-                    return@execute
+                publishPersistedInboxSnapshot(app)
+                when (val result = runCatching { BotCredentialsStore(app).loadResult() }
+                    .getOrElse { BotCredentialsReadResult.Unreadable }) {
+                    BotCredentialsReadResult.Missing -> publishCredentialRecoveryState(app, unreadable = false)
+                    BotCredentialsReadResult.Unreadable -> publishCredentialRecoveryState(app, unreadable = true)
+                    is BotCredentialsReadResult.Available -> connectInternal(app, result.credentials, persistCredentials = false)
                 }
-                is BotCredentialsReadResult.Available -> connectInternal(app, result.credentials, persistCredentials = false)
+            } finally {
+                setupLoadInFlight.set(false)
             }
+        }
+    }
+
+    /** Publish the encrypted inbox before credential migration or TDLib startup can take time. */
+    private fun publishPersistedInboxSnapshot(context: Context) {
+        val restored = runCatching {
+            val store = BotPrivateStore(context)
+            val tombstones = store.deletedMessageKeys
+            CachedPrivateState(
+                store.pairedUserId,
+                store.pairedChatId,
+                tombstones,
+                BotInboxRecoveryPolicy.restoreRows(store.videos, tombstones, MAX_LISTED_VIDEOS),
+            )
+        }.getOrNull() ?: return
+        val hasPairing = restored.pairedUserId > 0L && restored.pairedChatId > 0L
+        if (!hasPairing && restored.videos.isEmpty()) return
+        synchronized(lock) {
+            pairedUserId = restored.pairedUserId
+            pairedChatId = restored.pairedChatId
+            tombstonedMessages.clear()
+            tombstonedMessages.addAll(restored.tombstones)
+            videos.clear()
+            restored.videos.forEach { videos[it.messageId] = it }
+        }
+        publish {
+            copy(
+                paired = hasPairing,
+                setupComplete = setupComplete || hasPairing,
+                videos = restored.videos,
+            ).let(BotInboxRecoveryPolicy::initialStateLoaded)
         }
     }
 
@@ -160,7 +199,7 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
                 videos = snapshot.third,
                 error = error,
                 needsReconnect = !unreadable && snapshot.first,
-            )
+            ).let(BotInboxRecoveryPolicy::initialStateLoaded)
         }
     }
 
@@ -187,7 +226,17 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
             if (persistCredentials) BotCredentialsStore(context).save(value)
             val stateStore = BotPrivateStore(context)
             val restoredTombstones = stateStore.deletedMessageKeys
-            val restoredVideos = BotInboxRecoveryPolicy.restoreRows(stateStore.videos, restoredTombstones, MAX_LISTED_VIDEOS)
+            val persistedVideos = BotInboxRecoveryPolicy.restoreRows(stateStore.videos, restoredTombstones, MAX_LISTED_VIDEOS)
+            val sameAccountCachedVideos = synchronized(lock) {
+                if (credentials == value && pairedChatId > 0L && pairedChatId == stateStore.pairedChatId) {
+                    videos.values.toList()
+                } else {
+                    emptyList()
+                }
+            }
+            val restoredVideos = persistedVideos.ifEmpty {
+                BotInboxRecoveryPolicy.restoreRows(sameAccountCachedVideos, restoredTombstones, MAX_LISTED_VIDEOS)
+            }
             setupComplete = stateStore.pairedUserId > 0L && stateStore.pairedChatId > 0L
             val dataRoot = ownRoot(context)
             File(dataRoot, "tdlib").mkdirs()
@@ -271,6 +320,8 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
         } catch (_: Exception) {
             publishConnectionFailure("연결하지 못했어요", "봇 설정을 확인하고 다시 시도해 주세요.", setupComplete)
             closeClient(context, clearAccount = false)
+        } finally {
+            publish { BotInboxRecoveryPolicy.initialStateLoaded(this) }
         }
     }
 
@@ -1653,7 +1704,7 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
             pendingNonce = null; pairedUserId = 0L; pairedChatId = 0L; credentials = null
             botUserId = 0L; botUsername = null; botDisplayName = null
         }
-        publish { BotUiState(status = "연결 해제됨") }
+        publish { BotUiState(initialStateLoaded = true, status = "연결 해제됨") }
     }
 
     private fun publish(transform: BotUiState.() -> BotUiState) {

@@ -25,6 +25,7 @@ import io.github.polarfox0317.sikboonge.ui.theme.AppDimens
 import io.github.polarfox0317.sikboonge.ui.theme.AppTheme
 import io.github.polarfox0317.sikboonge.update.UpdateController
 import io.github.polarfox0317.sikboonge.update.UpdateStatus
+import io.github.polarfox0317.sikboonge.update.AppChangelog
 
 internal val LocalUpdateController = staticCompositionLocalOf { UpdateController }
 
@@ -36,6 +37,7 @@ internal fun AppRoot(
 ) {
     UpdateController.initialize(LocalContext.current)
     val updateStatus by UpdateController.status.collectAsStateWithLifecycle()
+    val pendingChangelog by UpdateController.pendingChangelog.collectAsStateWithLifecycle()
     val activityLaunch by UpdateController.activityLaunch.collectAsStateWithLifecycle()
     val installerLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -63,12 +65,32 @@ internal fun AppRoot(
                     stateOverride = stateOverride,
                     actionsOverride = actionsOverride,
                 )
-                if (stateOverride == null) {
+                if (stateOverride == null && pendingChangelog != null) {
+                    AppChangelogDialog(requireNotNull(pendingChangelog))
+                } else if (stateOverride == null) {
                     AutomaticUpdateDialog(updateStatus)
                 }
             }
         }
     }
+}
+
+@Composable
+private fun AppChangelogDialog(changelog: AppChangelog) {
+    AlertDialog(
+        onDismissRequest = UpdateController::acknowledgeChangelog,
+        title = { Text("버전 ${changelog.versionName} 업데이트") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(AppDimens.itemSpacing)) {
+                changelog.notes.forEach { note ->
+                    Text("• $note", style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = UpdateController::acknowledgeChangelog) { Text("확인") }
+        },
+    )
 }
 
 @Composable

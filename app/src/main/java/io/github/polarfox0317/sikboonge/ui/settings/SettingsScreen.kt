@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalButton
@@ -136,6 +137,30 @@ internal fun SettingsScreen(
                         tag = "settingsBotName",
                     )
                 }
+                if (state.bot.connected && !state.bot.paired) {
+                    Text(
+                        "내 Telegram 계정에 연결하려면 봇과의 비공개 대화를 시작해 주세요.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Button(
+                        onClick = actions::onPairBot,
+                        enabled = !state.bot.busy && !state.bot.username.isNullOrBlank(),
+                        shapes = ButtonDefaults.shapesFor(ButtonDefaults.MediumContainerHeight),
+                        contentPadding = ButtonDefaults.contentPaddingFor(ButtonDefaults.MediumContainerHeight),
+                        modifier = Modifier.fillMaxWidth()
+                            .heightIn(min = ButtonDefaults.MediumContainerHeight)
+                            .testTag("settingsBotPair"),
+                    ) {
+                        Text("내 Telegram 계정 연결", style = ButtonDefaults.textStyleFor(ButtonDefaults.MediumContainerHeight))
+                    }
+                    state.bot.pairingUrl?.let { url ->
+                        TextButton(
+                            onClick = { actions.onOpenExternalUrl(url) },
+                            modifier = Modifier.fillMaxWidth().testTag("settingsBotPairStart"),
+                        ) { Text("Telegram에서 Start 누르기") }
+                    }
+                }
                 if (state.bot.setupComplete || state.bot.connected) {
                     FilledTonalButton(
                         onClick = { confirmingDisconnect = true },
@@ -220,7 +245,7 @@ internal fun SettingsScreen(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Column(Modifier.weight(1f)) {
-                            Text("\uC571 \uC2DC\uC791 \uC2DC \uC790\uB3D9 \uD655\uC778", style = MaterialTheme.typography.bodyLarge)
+                            Text("\uC790\uB3D9 \uC5C5\uB370\uC774\uD2B8 \uD655\uC778", style = MaterialTheme.typography.bodyLarge)
                             Text(
                                 "\uC0C8 \uBC84\uC804\uC744 \uC870\uC6A9\uD788 \uD655\uC778\uD574\uC694.",
                                 style = MaterialTheme.typography.bodyMedium,

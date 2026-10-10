@@ -1,6 +1,8 @@
 package io.github.polarfox0317.sikboonge
 
 data class BotUiState(
+    /** True once this process has finished its first persisted credential/state read. */
+    val initialStateLoaded: Boolean = false,
     val setupComplete: Boolean = false,
     val refreshing: Boolean = false,
     val status: String = "연결 전",

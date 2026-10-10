@@ -52,11 +52,14 @@ internal enum class ActivityLaunchKind { UnknownSourcesSettings, Installer }
 
 internal data class UpdateActivityLaunchRequest(val id: Long, val kind: ActivityLaunchKind)
 
+internal data class AppChangelog(val versionCode: Long, val versionName: String, val notes: List<String>)
+
 /** Process-scoped update state, download work, and update preferences. */
 internal object UpdateController {
     private const val PREFERENCES_NAME = "sikboonge_update_preferences"
     private const val KEY_AUTO_CHECK = "auto_check_on_startup"
     private const val KEY_SKIPPED_VERSION = "skipped_auto_prompt_version"
+    private const val KEY_LAST_SEEN_CHANGELOG_VERSION_CODE = "last_seen_changelog_version_code"
     private const val APK_MIME_TYPE = "application/vnd.android.package-archive"
     private const val CONNECT_TIMEOUT_MS = 15_000
     private const val READ_TIMEOUT_MS = 30_000
@@ -65,9 +68,11 @@ internal object UpdateController {
     private val processScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val _status = MutableStateFlow<UpdateStatus>(UpdateStatus.Idle)
     private val _autoCheckEnabled = MutableStateFlow(true)
+    private val _pendingChangelog = MutableStateFlow<AppChangelog?>(null)
     private val _activityLaunch = MutableStateFlow<UpdateActivityLaunchRequest?>(null)
     val status: StateFlow<UpdateStatus> = _status.asStateFlow()
     val autoCheckEnabled: StateFlow<Boolean> = _autoCheckEnabled.asStateFlow()
+    internal val pendingChangelog: StateFlow<AppChangelog?> = _pendingChangelog.asStateFlow()
     val activityLaunch: StateFlow<UpdateActivityLaunchRequest?> = _activityLaunch.asStateFlow()
 
     @Volatile
@@ -87,7 +92,41 @@ internal object UpdateController {
             if (appContext != null) return
             appContext = app
             _autoCheckEnabled.value = preferences(app).getBoolean(KEY_AUTO_CHECK, true)
+            _pendingChangelog.value = pendingChangelogFor(app)
         }
+    }
+
+    /** Mark the bundled release notes seen only after the user acknowledges the dialog. */
+    fun acknowledgeChangelog() {
+        val context = contextOrNull() ?: return
+        val changelog = _pendingChangelog.value ?: return
+        preferences(context).edit()
+            .putLong(KEY_LAST_SEEN_CHANGELOG_VERSION_CODE, changelog.versionCode)
+            .apply()
+        _pendingChangelog.value = null
+    }
+
+    private fun pendingChangelogFor(context: Context): AppChangelog? = runCatching {
+        val info = getAppPackageInfo(context, context.packageName)
+        val currentCode = packageVersionCode(info)
+        val lastSeenCode = preferences(context).getLong(KEY_LAST_SEEN_CHANGELOG_VERSION_CODE, 0L)
+        val isUpdatedInstall = info.lastUpdateTime > info.firstInstallTime
+        if (currentCode <= lastSeenCode || (!isUpdatedInstall && lastSeenCode == 0L)) return@runCatching null
+        val notes = bundledChangelog(currentCode) ?: return@runCatching null
+        AppChangelog(
+            versionCode = currentCode,
+            versionName = info.versionName.orEmpty(),
+            notes = notes,
+        )
+    }.getOrNull()
+
+    private fun bundledChangelog(versionCode: Long): List<String>? = when (versionCode) {
+        109L, 110L -> listOf(
+            "봇 연결 후 검색과 영상 목록 화면으로 바로 이동하도록 수정했어요.",
+            "연결이 끊기거나 재연결 중이어도 기존에 받은 영상 목록을 볼 수 있어요.",
+            "봇에서 저장한 오디오가 변환 탭의 추출 완료 화면에 나타나는 문제를 수정했어요.",
+        )
+        else -> null
     }
 
     val currentVersionName: String

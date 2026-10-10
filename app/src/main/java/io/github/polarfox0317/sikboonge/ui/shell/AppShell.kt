@@ -407,7 +407,8 @@ private fun ShellTopBar(
     modifier: Modifier = Modifier,
 ) {
     val subtitle: (@Composable () -> Unit)? = when {
-        state.destination == Destination.Bot && state.bot.setupComplete && state.bot.paired && !state.botSetupRequested && !state.selectionMode ->
+        state.destination == Destination.Bot && (state.bot.connected || state.bot.paired) &&
+            (!state.botSetupRequested || state.bot.connected) && !state.selectionMode ->
             { { BotInboxSubtitle(state.bot) } }
         state.destination == Destination.Convert && !state.selectionMode ->
             { { ConvertSubtitle() } }
@@ -513,13 +514,11 @@ private fun LibrarySubtitle(count: Int) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.testTag("librarySubtitle"),
         )
-        if (count > 0) {
-            Text(
-                "듣기를 누르면 재생목록에 추가돼요.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+        Text(
+            "저장한 오디오를 듣고 관리해요.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 

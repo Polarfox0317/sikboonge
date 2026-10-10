@@ -66,6 +66,7 @@ import io.github.polarfox0317.sikboonge.R
 import io.github.polarfox0317.sikboonge.TRANSIENT_FEEDBACK_TIMEOUT_MS
 import io.github.polarfox0317.sikboonge.UserFacingErrors
 import io.github.polarfox0317.sikboonge.ui.components.ConfirmDeleteDialog
+import io.github.polarfox0317.sikboonge.ui.components.CenteredLoading
 import io.github.polarfox0317.sikboonge.ui.components.EmptyState
 import io.github.polarfox0317.sikboonge.ui.components.FormColumn
 import io.github.polarfox0317.sikboonge.ui.components.MediaCard
@@ -85,8 +86,6 @@ import io.github.polarfox0317.sikboonge.ui.theme.AppDimens
 import io.github.polarfox0317.sikboonge.ui.theme.WindowTier
 import kotlinx.coroutines.delay
 
-private enum class BotBody { Setup, Pairing, Inbox }
-
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 internal fun BotScreen(
@@ -104,11 +103,14 @@ internal fun BotScreen(
     LaunchedEffect(reselectionToken) {
         if (reselectionToken != 0) gridState.scrollToItem(0)
     }
-    val body = when {
-        state.botSetupRequested || !state.bot.setupComplete -> BotBody.Setup
-        !state.bot.paired -> BotBody.Pairing
-        else -> BotBody.Inbox
-    }
+    val body = BotBodyPolicy.resolve(
+        initialStateLoaded = state.bot.initialStateLoaded,
+        connected = state.bot.connected,
+        setupComplete = state.bot.setupComplete,
+        paired = state.bot.paired,
+        setupRequested = state.botSetupRequested,
+        hasCachedVideos = state.bot.videos.isNotEmpty(),
+    )
     Crossfade(
         targetState = body,
         modifier = modifier.fillMaxSize(),
@@ -119,6 +121,10 @@ internal fun BotScreen(
             if (target != body) Modifier.clearAndSetSemantics { } else Modifier,
         )) {
             when (target) {
+                BotBody.Loading -> CenteredLoading(
+                    modifier = Modifier.fillMaxSize().padding(contentPadding),
+                    label = "봇 연결 상태를 확인하고 있어요.",
+                )
                 BotBody.Setup -> BotSetup(state, actions, contentPadding)
                 BotBody.Pairing -> BotPairing(state, actions, contentPadding)
                 BotBody.Inbox -> BotInbox(state, actions, gridState, tier, contentPadding, onRename = { editingMessageId = it }, onScrollJump = onScrollJump)
@@ -230,30 +236,36 @@ private fun BotSetup(state: AppUiState, actions: AppActions, contentPadding: Pad
 private fun BotPairing(state: AppUiState, actions: AppActions, contentPadding: PaddingValues) {
     val bot = state.bot
     FormColumn(Modifier.fillMaxSize().padding(contentPadding).consumeWindowInsets(contentPadding).testTag("botContent")) {
-        SectionCard(
-            title = { Text("내 Telegram 계정 연결") },
-            body = {
-                BotStatus(bot)
-                Text("내 계정에서 봇의 비공개 대화를 시작해야 영상 목록이 연결돼요.")
-                Button(
-                    onClick = actions::onPairBot,
-                    enabled = !bot.busy && !bot.username.isNullOrBlank(),
+        BotPairingCard(bot, actions, Modifier.fillMaxWidth())
+    }
+}
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun BotPairingCard(bot: BotUiState, actions: AppActions, modifier: Modifier = Modifier) {
+    SectionCard(
+        title = { Text("내 Telegram 계정 연결") },
+        body = {
+            BotStatus(bot)
+            Text("내 계정에서 봇의 비공개 대화를 시작해야 영상 목록이 연결돼요.")
+            Button(
+                onClick = actions::onPairBot,
+                enabled = !bot.busy && !bot.username.isNullOrBlank(),
+                shapes = ButtonDefaults.shapesFor(ButtonDefaults.MediumContainerHeight),
+                contentPadding = ButtonDefaults.contentPaddingFor(ButtonDefaults.MediumContainerHeight),
+                modifier = Modifier.fillMaxWidth().heightIn(min = ButtonDefaults.MediumContainerHeight).testTag("botPair"),
+            ) { Text("내 Telegram 계정 연결", style = ButtonDefaults.textStyleFor(ButtonDefaults.MediumContainerHeight)) }
+            bot.pairingUrl?.let { url ->
+                OutlinedButton(
+                    onClick = { actions.onOpenExternalUrl(url) },
                     shapes = ButtonDefaults.shapesFor(ButtonDefaults.MediumContainerHeight),
                     contentPadding = ButtonDefaults.contentPaddingFor(ButtonDefaults.MediumContainerHeight),
-                    modifier = Modifier.fillMaxWidth().heightIn(min = ButtonDefaults.MediumContainerHeight).testTag("botPair"),
-                ) { Text("내 Telegram 계정 연결", style = ButtonDefaults.textStyleFor(ButtonDefaults.MediumContainerHeight)) }
-                bot.pairingUrl?.let { url ->
-                    OutlinedButton(
-                        onClick = { actions.onOpenExternalUrl(url) },
-                        shapes = ButtonDefaults.shapesFor(ButtonDefaults.MediumContainerHeight),
-                        contentPadding = ButtonDefaults.contentPaddingFor(ButtonDefaults.MediumContainerHeight),
-                        modifier = Modifier.fillMaxWidth().heightIn(min = ButtonDefaults.MediumContainerHeight),
-                    ) { Text("Telegram에서 Start 누르기", style = ButtonDefaults.textStyleFor(ButtonDefaults.MediumContainerHeight)) }
-                }
-            },
-            modifier = Modifier.fillMaxWidth(),
-        )
-    }
+                    modifier = Modifier.fillMaxWidth().heightIn(min = ButtonDefaults.MediumContainerHeight),
+                ) { Text("Telegram에서 Start 누르기", style = ButtonDefaults.textStyleFor(ButtonDefaults.MediumContainerHeight)) }
+            }
+        },
+        modifier = modifier,
+    )
 }
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class, ExperimentalMaterial3Api::class)
@@ -269,7 +281,7 @@ private fun BotInbox(
 ) {
     val bot = state.bot
     val refreshEnabled = bot.connected && bot.paired && !bot.busy && !bot.refreshing && !state.selectionMode
-    val showReconnectButton = bot.needsReconnect && bot.setupComplete && !state.botSetupRequested && !state.selectionMode
+    val showReconnectButton = bot.needsReconnect && bot.paired && !state.botSetupRequested && !state.selectionMode
     val pullState = rememberPullToRefreshState()
     val horizontalPadding = AppDimens.contentHorizontalPadding(tier)
     val direction = androidx.compose.ui.platform.LocalLayoutDirection.current
@@ -318,18 +330,16 @@ private fun BotInbox(
                     )
                 }
             }
-            if (bot.videos.isNotEmpty()) {
-                item(key = "listControls", span = { GridItemSpan(maxLineSpan) }) {
-                    ListControls(
-                        query = state.botQuery,
-                        onQueryChange = actions::onBotQueryChanged,
-                        layout = state.botLayout,
-                        onLayoutChange = { actions.onLayoutChanged(Destination.Bot, it) },
-                        placeholder = "\uBD07 \uC601\uC0C1 \uAC80\uC0C9",
-                        tagPrefix = "bot",
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
+            item(key = "listControls", span = { GridItemSpan(maxLineSpan) }) {
+                ListControls(
+                    query = state.botQuery,
+                    onQueryChange = actions::onBotQueryChanged,
+                    layout = state.botLayout,
+                    onLayoutChange = { actions.onLayoutChanged(Destination.Bot, it) },
+                    placeholder = "\uBD07 \uC601\uC0C1 \uAC80\uC0C9",
+                    tagPrefix = "bot",
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
             if (state.selectionMode && bot.videos.isNotEmpty()) {
                 item(key = "bot-selection-hint", span = { GridItemSpan(maxLineSpan) }) {
@@ -345,9 +355,11 @@ private fun BotInbox(
                 item(key = "bot-empty", span = { GridItemSpan(maxLineSpan) }) {
                     EmptyState(
                         title = "연결된 비공개 대화의 영상 · ${bot.videos.size}개",
-                        body = "봇과의 비공개 대화에 영상을 전달하면 여기에 표시돼요.",
-                        actionLabel = bot.pairingUrl?.let { "Telegram에서 Start 누르기" },
-                        onAction = bot.pairingUrl?.let { url -> { actions.onOpenExternalUrl(url) } },
+                        body = if (bot.connected) {
+                            "봇과의 비공개 대화에 영상을 전달해 주세요. 전달된 영상이 여기에 표시돼요."
+                        } else {
+                            "봇과의 비공개 대화에 영상을 전달하면 여기에 표시돼요."
+                        },
                     )
                 }
             }
@@ -502,12 +514,10 @@ internal fun BotInboxSubtitle(bot: BotUiState, modifier: Modifier = Modifier) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.testTag("botInbox"),
         )
-        if (bot.videos.isNotEmpty()) {
-            Text(
-                "다른 재생 앱에는 오디오만 전달해요. 처음 여는 데 잠시 걸릴 수 있어요.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+        Text(
+            "다른 재생 앱에는 오디오만 전달해요. 처음 여는 데 잠시 걸릴 수 있어요.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }

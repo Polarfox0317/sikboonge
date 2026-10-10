@@ -2,6 +2,7 @@ package io.github.polarfox0317.sikboonge.ui.convert
 
 import android.os.Build
 import io.github.polarfox0317.sikboonge.ConversionState
+import io.github.polarfox0317.sikboonge.ConversionPresentationPolicy
 import io.github.polarfox0317.sikboonge.PlayerArtwork
 import io.github.polarfox0317.sikboonge.R
 import io.github.polarfox0317.sikboonge.ui.components.FormColumn
@@ -128,14 +129,14 @@ internal fun ConvertScreen(
                 Icon(painterResource(R.drawable.ic_media_audio), contentDescription = null)
                 Spacer(Modifier.width(ButtonDefaults.IconSpacing))
                 Text(
-                    if (conversion.running) "추출 중…" else "오디오 추출",
+                    if (ConversionPresentationPolicy.showLocalProgress(conversion)) "추출 중…" else "오디오 추출",
                     style = ButtonDefaults.textStyleFor(ButtonDefaults.LargeContainerHeight),
                 )
             }
 
-            if (conversion.running) ConversionProgress(state, conversion, actions)
+            if (ConversionPresentationPolicy.showLocalProgress(conversion)) ConversionProgress(state, conversion, actions)
 
-            conversion.result?.let { result ->
+            ConversionPresentationPolicy.localResult(conversion)?.let { result ->
                 SectionCard(
                     title = {
                         Row(

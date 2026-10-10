@@ -7,6 +7,16 @@ import org.junit.Test
 
 class BotInboxRecoveryPolicyTest {
     @Test
+    fun initialStateLoadSignalIsFalseUntilBootstrapFinishesAndThenStaysLoaded() {
+        val initial = BotUiState()
+        assertFalse(initial.initialStateLoaded)
+
+        val loaded = BotInboxRecoveryPolicy.initialStateLoaded(initial)
+        assertTrue(loaded.initialStateLoaded)
+        assertEquals(loaded, BotInboxRecoveryPolicy.initialStateLoaded(loaded))
+    }
+
+    @Test
     fun startupPublishesStoredRowsBeforeTheConnectionCompletes() {
         val cached = video(41L)
         val restored = BotInboxRecoveryPolicy.restoreRows(listOf(cached), emptySet(), limit = 50)

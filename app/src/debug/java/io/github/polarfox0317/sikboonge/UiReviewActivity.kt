@@ -30,6 +30,7 @@ import io.github.polarfox0317.sikboonge.ui.state.moveQueueEntry
 import io.github.polarfox0317.sikboonge.ui.state.filterLibrary
 import io.github.polarfox0317.sikboonge.ui.state.filterBot
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
@@ -40,7 +41,24 @@ class UiReviewActivity : ComponentActivity() {
     private lateinit var controller: AppController
     private var sample by mutableStateOf<ReviewSample?>(null)
     private var sampleError by mutableStateOf<String?>(null)
-    private var bot by mutableStateOf(BotUiState())
+    private val fixtureBotStateFlow = MutableStateFlow(
+        BotUiState(
+            initialStateLoaded = true,
+            setupComplete = true,
+            connected = true,
+            paired = true,
+            botName = "로컬 샘플 봇",
+            status = "로컬 테스트 모드 · Telegram 연결 안 함",
+        ),
+    )
+    private val botSnapshot = mutableStateOf(fixtureBotStateFlow.value)
+    private var bot: BotUiState
+        get() = botSnapshot.value
+        set(value) {
+            val loaded = value.copy(initialStateLoaded = true)
+            botSnapshot.value = loaded
+            fixtureBotStateFlow.value = loaded
+        }
     private var extraLibrary by mutableStateOf<List<AudioResult>>(emptyList())
     private var conversion by mutableStateOf(ConversionState())
     private var sampleVideoSelected by mutableStateOf(true)
@@ -61,7 +79,10 @@ class UiReviewActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         if (Build.VERSION.SDK_INT >= 29) window.isNavigationBarContrastEnforced = false
-        controller = ViewModelProvider(this, AppControllerFactory(applicationContext))[AppController::class.java]
+        controller = ViewModelProvider(
+            this,
+            AppControllerFactory(applicationContext, botStateOverride = fixtureBotStateFlow),
+        )[AppController::class.java]
         val fixtureActions = ReviewActions(controller.actions)
         setContent {
             val live by controller.uiState.collectAsStateWithLifecycle()
@@ -222,7 +243,7 @@ class UiReviewActivity : ComponentActivity() {
             if (!conversion.running) delegate.onSaveFormatChanged(value)
         }
         override fun onSaveBotVideo(video: BotVideo, format: AudioFormat) =
-            extractSample(controller.uiState.value.saveFormat, video.thumbnailPath, video.thumbnailBase64)
+            extractSample(controller.uiState.value.saveFormat, video.thumbnailPath, video.thumbnailBase64, ConversionOrigin.BOT_SAVE)
         override fun onLibraryQueryChanged(query: ListQuery) {
             controller.updateLibraryQuery(query, sample?.libraryAudio.orEmpty() + extraLibrary)
         }
@@ -314,14 +335,23 @@ class UiReviewActivity : ComponentActivity() {
         }
     }
 
-    private fun extractSample(format: AudioFormat, artworkPath: String? = null, artworkBase64: String? = null) {
+    private fun extractSample(
+        format: AudioFormat,
+        artworkPath: String? = null,
+        artworkBase64: String? = null,
+        origin: ConversionOrigin = ConversionOrigin.LOCAL_CONVERT,
+    ) {
         val source = sample ?: run {
-            conversion = ConversionState(error = sampleError ?: "로컬 테스트 샘플을 준비 중이에요.")
+            if (origin == ConversionOrigin.LOCAL_CONVERT) {
+                conversion = ConversionState(origin = origin, error = sampleError ?: "로컬 테스트 샘플을 준비 중이에요.")
+            } else {
+                controller.onHostFeedback("로컬 테스트 샘플을 준비하지 못했어요.", true)
+            }
             return
         }
         if (extracting) return
         extracting = true
-        conversion = ConversionState(running = true, stage = "로컬 테스트 영상에서 오디오 추출 중")
+        conversion = ConversionState(origin = origin, running = true, stage = "로컬 테스트 영상에서 오디오 추출 중")
         lifecycleScope.launch {
             val result = ReviewSampleMedia.extract(
                 source,
@@ -344,9 +374,24 @@ class UiReviewActivity : ComponentActivity() {
                         ),
                     )
                     extraLibrary = listOf(savedAudio) + extraLibrary
-                    conversion = ConversionState(result = savedAudio)
+                    if (origin == ConversionOrigin.LOCAL_CONVERT) {
+                        conversion = ConversionState(origin = origin, result = savedAudio)
+                    } else {
+                        conversion = ConversionState(
+                            origin = origin,
+                            botSaveCompletionId = System.nanoTime().coerceAtLeast(1L),
+                        )
+                        controller.onHostFeedback("오디오를 보관함에 저장했어요.", false)
+                    }
                 },
-                onFailure = { error -> conversion = ConversionState(error = error.message ?: "로컬 테스트 오디오를 만들지 못했어요.") },
+                onFailure = { error ->
+                    if (origin == ConversionOrigin.LOCAL_CONVERT) {
+                        conversion = ConversionState(origin = origin, error = error.message ?: "로컬 테스트 오디오를 만들지 못했어요.")
+                    } else {
+                        conversion = ConversionState(origin = origin, error = "봇 오디오를 저장하지 못했어요.")
+                        controller.onHostFeedback("봇 오디오를 저장하지 못했어요.", true)
+                    }
+                },
             )
         }
     }

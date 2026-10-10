@@ -24,7 +24,9 @@ data class AudioResult(
     val date: Long,
     val artworkPath: String? = null,
 )
+enum class ConversionOrigin { LOCAL_CONVERT, BOT_SAVE }
 data class ConversionState(
+    val origin: ConversionOrigin = ConversionOrigin.LOCAL_CONVERT,
     val running: Boolean = false,
     val stage: String = "",
     val progress: Float? = null,
@@ -33,6 +35,7 @@ data class ConversionState(
     val receivedBytes: Long? = null,
     val totalBytes: Long? = null,
     val bytesPerSecond: Long? = null,
+    val botSaveCompletionId: Long? = null,
 )
 internal data class AppStoreRemovalResult(val removedEntries: Int, val failedFileDeletes: Int)
 object AppStore {
@@ -207,6 +210,7 @@ class ConversionService : Service() {
     private val stateLock = Any()
     @Volatile private var transferProgress: TransferProgressSampler? = null
     private var activeJob = 0L
+    @Volatile private var activeOrigin = ConversionOrigin.LOCAL_CONVERT
     override fun onBind(intent: Intent?): IBinder? = null
     override fun onCreate() {
         super.onCreate()
@@ -247,7 +251,8 @@ class ConversionService : Service() {
         val botFileId = intent.getIntExtra(BotRuntime.EXTRA_TDLIB_FILE_ID, 0).takeIf { it > 0 }
         val legacyBotSaveAccess = BotSaveTestHooks.accessOverride
         activeBotFileId = botFileId
-        AppStore.state.value = ConversionState(running = true, stage = if (botFileId != null) "Telegram에서 오디오 확인 중" else "영상 가져오는 중")
+        activeOrigin = if (botFileId != null) ConversionOrigin.BOT_SAVE else ConversionOrigin.LOCAL_CONVERT
+        AppStore.state.value = ConversionState(origin = activeOrigin, running = true, stage = if (botFileId != null) "Telegram에서 오디오 확인 중" else "영상 가져오는 중")
         workerJob = job
         worker = Thread {
             val input = if (botFileId != null) null else File(cacheDir, "input-${System.nanoTime()}.video")
@@ -338,7 +343,11 @@ class ConversionService : Service() {
                             AppStore.add(this, result)
                             addedToHistory = true
                             activeJob = 0L
-                            AppStore.state.value = ConversionState(stage = "추출 완료", progress = 1f, result = result)
+                            AppStore.state.value = if (activeOrigin == ConversionOrigin.BOT_SAVE) {
+                                ConversionState(origin = activeOrigin, botSaveCompletionId = job)
+                            } else {
+                                ConversionState(origin = activeOrigin, stage = "추출 완료", progress = 1f, result = result)
+                            }
                         }
                     }
                 } finally {
@@ -420,6 +429,7 @@ class ConversionService : Service() {
             if (activeJob != job) return
             val sample = transferProgress?.snapshot()
             AppStore.state.value = ConversionState(
+                origin = activeOrigin,
                 running = true,
                 stage = stage,
                 progress = progress,
@@ -457,7 +467,7 @@ class ConversionService : Service() {
         synchronized(stateLock) {
             if (activeJob != job) return
             activeJob = 0L
-            AppStore.state.value = state
+            AppStore.state.value = state.copy(origin = activeOrigin)
         }
     }
     private fun notification(stage: String, progress: Float?): Notification {

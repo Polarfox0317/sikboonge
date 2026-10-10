@@ -10,7 +10,6 @@ import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
-import javax.crypto.spec.GCMParameterSpec
 
 internal sealed interface BotCredentialsReadResult {
     data object Missing : BotCredentialsReadResult
@@ -23,13 +22,20 @@ class BotCredentialsStore internal constructor(
     context: Context,
     preferencesName: String = PREFS_NAME,
     private val keyAlias: String = KEY_ALIAS,
+    legacyAlias: String? = null,
 ) {
     private val preferences = context.applicationContext.getSharedPreferences(preferencesName, Context.MODE_PRIVATE)
+    // Read fallback is disabled; the legacy alias is retained only for explicit clear().
+    private val legacyKeyAlias = legacyAlias ?: if (keyAlias == KEY_ALIAS) LEGACY_KEY_ALIAS else "$keyAlias.legacy"
 
     @Synchronized
-    fun save(credentials: BotCredentials) {
+    fun save(credentials: BotCredentials) = KeystoreAliasMigration.withLock {
         require(credentials.apiId > 0) { "apiId must be positive" }
         require(credentials.apiHash.isNotBlank() && credentials.token.isNotBlank()) { "Credentials must not be blank" }
+        // Disabled legacy migration call; re-enable only for a confirmed compatibility release:
+        // KeystoreAliasMigration.migrateAndRead(preferences, keyAlias, legacyKeyAlias, setOf(CREDENTIALS_KEY), ::validateCredentials)
+        KeystoreAliasMigration.readCurrentOnly(preferences, keyAlias, setOf(CREDENTIALS_KEY), ::validateCredentials)
+            .values.forEach { it.fill(0) }
         val plaintext = JSONObject()
             .put("apiId", credentials.apiId)
             .put("apiHash", credentials.apiHash)
@@ -56,38 +62,35 @@ class BotCredentialsStore internal constructor(
 
     /** Distinguishes a new setup from stored credentials that the device cannot currently read. */
     @Synchronized
-    internal fun loadResult(): BotCredentialsReadResult {
-        val encoded = preferences.getString(CREDENTIALS_KEY, null) ?: return BotCredentialsReadResult.Missing
-        return try {
-            val key = getExistingKey() ?: return BotCredentialsReadResult.Unreadable
-            val packed = Base64.decode(encoded, Base64.NO_WRAP)
-            require(packed.size > GCM_IV_BYTES) { "Encrypted credential record is truncated" }
-            val iv = packed.copyOfRange(0, GCM_IV_BYTES)
-            val ciphertext = packed.copyOfRange(GCM_IV_BYTES, packed.size)
-            val cipher = Cipher.getInstance(TRANSFORMATION)
-            cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, iv))
-            val plaintext = cipher.doFinal(ciphertext)
-            try {
-                val json = JSONObject(String(plaintext, StandardCharsets.UTF_8))
-                BotCredentialsReadResult.Available(
-                    BotCredentials(json.getInt("apiId"), json.getString("apiHash"), json.getString("token")),
-                )
-            } finally {
-                plaintext.fill(0)
-            }
+    internal fun loadResult(): BotCredentialsReadResult = KeystoreAliasMigration.withLock {
+        val current = try {
+            // Disabled legacy migration call; re-enable only for a confirmed compatibility release:
+            // KeystoreAliasMigration.migrateAndRead(preferences, keyAlias, legacyKeyAlias, setOf(CREDENTIALS_KEY), ::validateCredentials)
+            KeystoreAliasMigration.readCurrentOnly(preferences, keyAlias, setOf(CREDENTIALS_KEY), ::validateCredentials)
         } catch (_: Exception) {
-            // Keep the ciphertext and KeyStore alias so a temporary read failure cannot erase auth.
+            return@withLock BotCredentialsReadResult.Unreadable
+        }
+        val plaintext = current[CREDENTIALS_KEY] ?: run {
+            current.values.forEach { it.fill(0) }
+            return@withLock BotCredentialsReadResult.Missing
+        }
+        try {
+            val json = JSONObject(String(plaintext, StandardCharsets.UTF_8))
+            BotCredentialsReadResult.Available(
+                BotCredentials(json.getInt("apiId"), json.getString("apiHash"), json.getString("token")),
+            )
+        } catch (_: Exception) {
             BotCredentialsReadResult.Unreadable
+        } finally {
+            current.values.forEach { it.fill(0) }
         }
     }
 
     @Synchronized
-    fun clear() {
-        preferences.edit().remove(CREDENTIALS_KEY).commit()
-        runCatching {
-            val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-            if (keyStore.containsAlias(keyAlias)) keyStore.deleteEntry(keyAlias)
-        }
+    fun clear() = KeystoreAliasMigration.withLock {
+        check(preferences.edit().remove(CREDENTIALS_KEY).commit()) { "Could not clear encrypted bot credentials" }
+        removeAlias(keyAlias)
+        removeAlias(legacyKeyAlias)
     }
 
     private fun getOrCreateKey(): SecretKey {
@@ -111,13 +114,27 @@ class BotCredentialsStore internal constructor(
         return keyStore.getKey(keyAlias, null) as? SecretKey
     }
 
+    private fun validateCredentials(name: String, plaintext: ByteArray) {
+        check(name == CREDENTIALS_KEY)
+        val json = JSONObject(String(plaintext, StandardCharsets.UTF_8))
+        require(json.getInt("apiId") > 0)
+        require(json.getString("apiHash").isNotBlank() && json.getString("token").isNotBlank())
+    }
+
+    private fun removeAlias(alias: String) {
+        val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+        if (keyStore.containsAlias(alias)) keyStore.deleteEntry(alias)
+        check(!KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }.containsAlias(alias)) {
+            "Could not remove encrypted bot credential key"
+        }
+    }
+
     private companion object {
         const val PREFS_NAME = "bot_credentials_secure"
         const val CREDENTIALS_KEY = "encrypted_credentials_v1"
         const val KEY_ALIAS = "io.github.polarfox0317.sikboonge.bot.credentials.v1"
+        const val LEGACY_KEY_ALIAS = "app.videoaudio.bot.credentials.v1"
         const val ANDROID_KEYSTORE = "AndroidKeyStore"
         const val TRANSFORMATION = "AES/GCM/NoPadding"
-        const val GCM_IV_BYTES = 12
-        const val GCM_TAG_BITS = 128
     }
 }
