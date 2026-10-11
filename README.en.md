@@ -69,18 +69,6 @@ See the [latest GitHub release](https://github.com/Polarfox0317/sikboonge/releas
 
 Download the FFmpegKit Audio 8.1.7 native library's corresponding source and build materials from the existing v1.0.1 [stable public download link](https://github.com/Polarfox0317/sikboonge/releases/download/v1.0.1/ffmpeg-kit-audio-8.1.7-corresponding-source.zip). SHA-256: `3e1dae181ff2b926b2dd298517bd2609cfe5ad2829c52fc10629131e1ccbe4c5`; size: `44,489,872` bytes. Releases containing the same library binary clearly link to this bundle rather than attaching a duplicate ZIP every time. The local copy remains at `artifacts/third-party-source/ffmpeg-kit-audio-8.1.7-corresponding-source.zip`. A changed library binary requires matching new source materials. See the [source and relinking notes](docs/THIRD_PARTY_SOURCE.md).
 
-## Verification status
-
-Version `1.0.0` compiled for both debug and release, and `testKotlin` passed 44 unit tests. On an Android emulator, the synthetic `0.9` to `1.0` import/upgrade check passed (1 check), and the Android fixture checks passed (5 checks). These results apply to `1.0.0` only; the `1.0.1` verification below is separate.
-
-For version `1.0.1` (version code `110`), the curated public source compiled the release variant. The release APK was verified with `apksigner` using the project release certificate. No installation, visual review, or Telegram end-to-end verification was performed for code `110`.
-
-Final build and package verification for 1.1.0 follows the evidence recorded for that release. Earlier results above are not reused as 1.1.0 results. This README makes no new claim of successful manual UI review or Telegram end-to-end testing.
-
-## Existing bot connection data
-
-Bot credentials are encrypted with Android Keystore on the device. The current source, following version `1.0.1`, reads credentials using the current key alias and does not automatically migrate credentials encrypted under an earlier alias. Existing bot connection data from earlier builds may not be readable after updating; if that happens, setting up the bot again may be required. This version does not automatically delete app preferences or stored keys.
-
 ## Third-party software and licensing
 
 See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md), the [`third-party source notes`](docs/THIRD_PARTY_SOURCE.md), and the `licenses/` directory for dependency provenance and included notices. The app uses FFmpegKit Audio, FFmpeg, LAME, TDLib Android Core, AndroidX, Compose, Media3, and Kotlin components.
