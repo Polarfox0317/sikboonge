@@ -74,18 +74,6 @@ Android APK는 [최신 GitHub 릴리스](https://github.com/Polarfox0317/sikboon
 
 FFmpegKit Audio 8.1.7의 네이티브 라이브러리 대응 소스·빌드 자료는 기존 v1.0.1의 [고정 공개 다운로드 링크](https://github.com/Polarfox0317/sikboonge/releases/download/v1.0.1/ffmpeg-kit-audio-8.1.7-corresponding-source.zip)에서 받으세요. SHA-256은 `3e1dae181ff2b926b2dd298517bd2609cfe5ad2829c52fc10629131e1ccbe4c5`, 크기는 `44,489,872`바이트입니다. 같은 바이너리를 사용하는 릴리스는 이 자료를 명확히 안내하며 동일 ZIP을 매번 중복 첨부하지 않습니다. 로컬 보관본은 `artifacts/third-party-source/ffmpeg-kit-audio-8.1.7-corresponding-source.zip`에 있습니다. 라이브러리 바이너리가 바뀌면 해당 바이너리에 맞는 새 소스 자료가 필요합니다. [소스·재링크 안내](docs/THIRD_PARTY_SOURCE.md)를 참고하세요.
 
-## 검증 상태
-
-버전 `1.0.0`은 디버그 및 릴리스 빌드에 성공했고, `testKotlin`의 단위 테스트 44개가 통과했습니다. Android 에뮬레이터에서 합성 `0.9`→`1.0` 가져오기/업그레이드 검사 1개와 Android fixture 검사 5개가 통과했습니다. 이 결과는 `1.0.0`에만 해당하며 아래 `1.0.1` 검증과는 별도입니다.
-
-버전 `1.0.1`(version code `110`)은 공개용 소스로 릴리스 빌드를 완료했습니다. 릴리스 APK는 프로젝트 릴리스 인증서를 사용해 `apksigner`로 확인했습니다. 코드 `110`의 기기 설치, 시각적 검토, Telegram 종단 간 동작은 검증하지 않았습니다.
-
-1.1.0의 최종 빌드·패키지 검증은 해당 릴리스의 검증 기록을 따릅니다. 위의 이전 버전 결과를 1.1.0의 결과로 재사용하지 않으며, 이 README는 새로운 수동 UI 검토나 Telegram 종단 간 테스트의 성공을 주장하지 않습니다.
-
-## 기존 봇 연결 정보
-
-봇 연결 정보는 기기의 Android Keystore로 암호화됩니다. 버전 `1.0.1` 이후의 현재 소스는 현재 키 alias로 암호화된 정보를 읽으며, 이전 alias로 암호화된 정보를 자동으로 옮기지 않습니다. 이전 빌드의 봇 연결 정보는 업데이트 후 읽히지 않을 수 있으며, 그런 경우 봇을 다시 설정해야 할 수 있습니다. 이 버전은 앱 설정이나 저장된 키를 자동으로 삭제하지 않습니다.
-
 ## Third-party software and licensing
 
 See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md), the [`third-party source notes`](docs/THIRD_PARTY_SOURCE.md), and the `licenses/` directory for dependency provenance and included notices. The app uses FFmpegKit Audio, FFmpeg, LAME, TDLib Android Core, AndroidX, Compose, Media3, and Kotlin components.
