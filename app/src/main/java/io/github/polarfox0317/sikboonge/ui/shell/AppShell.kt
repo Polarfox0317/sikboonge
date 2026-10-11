@@ -98,8 +98,12 @@ import io.github.polarfox0317.sikboonge.ui.state.AppActions
 import io.github.polarfox0317.sikboonge.ui.state.AppController
 import io.github.polarfox0317.sikboonge.ui.state.AppUiState
 import io.github.polarfox0317.sikboonge.ui.state.Destination
+import io.github.polarfox0317.sikboonge.ui.state.SettingsPage
 import io.github.polarfox0317.sikboonge.ui.state.HostEffects
 import io.github.polarfox0317.sikboonge.ui.settings.SettingsScreen
+import io.github.polarfox0317.sikboonge.ui.settings.licenses.OpenSourceLicenses
+import io.github.polarfox0317.sikboonge.ui.settings.licenses.OpenSourceLicenseListScreen
+import io.github.polarfox0317.sikboonge.ui.settings.licenses.OpenSourceLicenseDetailScreen
 import io.github.polarfox0317.sikboonge.ui.theme.AppDimens
 import io.github.polarfox0317.sikboonge.ui.theme.WindowTier
 import io.github.polarfox0317.sikboonge.ui.theme.rememberWindowTier
@@ -137,11 +141,17 @@ internal fun AppShell(
     val libraryAppBar = rememberTopAppBarState()
     val botAppBar = rememberTopAppBarState()
     val settingsAppBar = rememberTopAppBarState()
+    val licensesAppBar = rememberTopAppBarState()
+    val licenseDetailAppBar = rememberTopAppBarState()
     val appBarState = when (state.destination) {
         Destination.Convert -> convertAppBar
         Destination.Library -> libraryAppBar
         Destination.Bot -> botAppBar
-        Destination.Settings -> settingsAppBar
+        Destination.Settings -> when (state.settingsPage) {
+            SettingsPage.Root -> settingsAppBar
+            SettingsPage.Licenses -> licensesAppBar
+            is SettingsPage.LicenseDetail -> licenseDetailAppBar
+        }
     }
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(
         state = appBarState,
@@ -333,9 +343,46 @@ internal fun AppShell(
                                     reselectionToken = deliveredReselection,
                                     onScrollJump = onAppBarScrollJump,
                                 )
-                                Destination.Settings -> SettingsScreen(
-                                    state, actions, tier, modifier = Modifier.fillMaxSize(), contentPadding = screenPadding,
-                                )
+                                Destination.Settings -> {
+                                    val settingsPages = rememberSaveableStateHolder()
+                                    AnimatedContent(
+                                        targetState = state.settingsPage,
+                                        contentKey = { it.saveableKey() },
+                                        transitionSpec = {
+                                            val sign = if (targetState.depth() >= initialState.depth()) 1 else -1
+                                            (fadeIn(effectsSpec) + slideInHorizontally(spatialSpec) { sign * destinationShift })
+                                                .togetherWith(fadeOut(effectsSpec) + slideOutHorizontally(spatialSpec) { -sign * destinationShift })
+                                        },
+                                        modifier = Modifier.fillMaxSize(),
+                                        label = "settingsPage",
+                                    ) { page ->
+                                        Box(Modifier.fillMaxSize().then(
+                                            if (page != state.settingsPage) Modifier.clearAndSetSemantics { } else Modifier,
+                                        )) {
+                                            settingsPages.SaveableStateProvider(page.saveableKey()) {
+                                                when (page) {
+                                                    SettingsPage.Root -> SettingsScreen(
+                                                        state, actions, tier, modifier = Modifier.fillMaxSize(), contentPadding = screenPadding,
+                                                    )
+                                                    SettingsPage.Licenses -> OpenSourceLicenseListScreen(
+                                                        onOpenLicense = actions::onOpenLicense,
+                                                        modifier = Modifier.fillMaxSize(), contentPadding = screenPadding,
+                                                    )
+                                                    is SettingsPage.LicenseDetail -> {
+                                                        val entry = OpenSourceLicenses.find(page.id)
+                                                        if (entry != null) OpenSourceLicenseDetailScreen(
+                                                            entry = entry, onFeedback = controller::onHostFeedback,
+                                                            modifier = Modifier.fillMaxSize(), contentPadding = screenPadding,
+                                                        ) else OpenSourceLicenseListScreen(
+                                                            onOpenLicense = actions::onOpenLicense,
+                                                            modifier = Modifier.fillMaxSize(), contentPadding = screenPadding,
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -377,6 +424,7 @@ internal fun AppShell(
                 menuExpanded -> menuExpanded = false
                 state.selectionMode -> actions.onClearSelection()
                 state.destination == Destination.Bot && state.botSetupRequested -> actions.onCloseBotSetup()
+                state.destination == Destination.Settings -> actions.onBack()
                 playerVisible && state.playerExpanded -> actions.setPlayerExpanded(false)
                 else -> actions.onBack()
             }
@@ -422,7 +470,11 @@ private fun ShellTopBar(
             Text(
                 when {
                     state.selectionMode -> "${state.selectedCount()}개 선택"
-                    state.destination == Destination.Settings -> "설정"
+                    state.destination == Destination.Settings -> when (val page = state.settingsPage) {
+                        SettingsPage.Root -> "설정"
+                        SettingsPage.Licenses -> "오픈소스 라이선스"
+                        is SettingsPage.LicenseDetail -> OpenSourceLicenses.find(page.id)?.name ?: "오픈소스 라이선스"
+                    }
                     state.destination == Destination.Library -> "보관함"
                     state.destination == Destination.Bot -> "봇"
                     else -> "변환"
@@ -599,7 +651,7 @@ private fun shellMenuGroups(state: AppUiState, actions: AppActions, diagnosticsA
             Destination.Bot -> {
                 add(ShellMenuGroup("menuSection_bot", listOf(
                     ShellMenuItem("새로고침", R.drawable.ic_menu_refresh, "menuRefreshBot", "menuIcon_refresh",
-                        enabled = state.bot.connected && state.bot.paired && !state.bot.busy && !state.bot.refreshing,
+                        enabled = !state.bot.refreshing,
                         onClick = actions::onRefreshBot),
                 )))
                 add(ShellMenuGroup("menuSection_botList", listOf(ShellMenuItem(
@@ -629,7 +681,6 @@ private class ShellMessages {
 @Composable
 private fun rememberShellMessages(controller: AppController, state: AppUiState): ShellMessages {
     val messages = remember(controller) { ShellMessages() }
-    var progressToastShown by remember(controller) { mutableStateOf(false) }
     val owner = LocalLifecycleOwner.current
     LaunchedEffect(controller, owner) {
         owner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -643,7 +694,7 @@ private fun rememberShellMessages(controller: AppController, state: AppUiState):
                     message.isError && message.text == streamError -> Unit
                     message.isError && message.text == botError -> Unit // BotInlineStatus owns botTransientError.
                     message.isError && message.text == conversionError -> Unit
-                    message.text == BOT_SAVE_PREPARATION_TEXT && snapshot.preparingBotSaveMessageId != null -> Unit
+                    message.text == BOT_SAVE_PREPARATION_TEXT && snapshot.preparingBotSaveMessageIds.isNotEmpty() -> Unit
                     else -> messages.notice.show(message.text, message.persistent)
                 }
             }
@@ -663,20 +714,14 @@ private fun rememberShellMessages(controller: AppController, state: AppUiState):
             }
         }
     }
-    LaunchedEffect(state.conversion.running, state.conversion.stage, state.preparingBotSaveMessageId) {
-        val jobActive = state.conversion.running || state.preparingBotSaveMessageId != null
-        if (!jobActive) {
-            progressToastShown = false
-            messages.progress.dismiss()
-        } else if (!progressToastShown) {
-            val text = when {
-                state.preparingBotSaveMessageId != null -> BOT_SAVE_PREPARATION_TEXT
-                state.conversion.stage.isNotBlank() -> state.conversion.stage
-                else -> BOT_SAVE_PREPARATION_TEXT
-            }
-            messages.progress.show(text, persistent = false)
-            progressToastShown = true
+    LaunchedEffect(state.conversion.running, state.conversion.stage, state.preparingBotSaveMessageIds) {
+        val jobActive = state.conversion.running || state.preparingBotSaveMessageIds.isNotEmpty()
+        val text = when {
+            state.preparingBotSaveMessageIds.isNotEmpty() -> BOT_SAVE_PREPARATION_TEXT
+            state.conversion.stage.isNotBlank() -> state.conversion.stage
+            else -> BOT_SAVE_PREPARATION_TEXT
         }
+        messages.progress.updateProgress(jobActive, text)
     }
     return messages
 }
@@ -690,6 +735,18 @@ private fun StreamingState.safeError(): String? = UserFacingErrors.fromErrorStri
 private fun StreamingState.isPlayerVisible(): Boolean =
     source != PlaybackSource.NONE &&
         (resolving || ready || error != null || playing || buffering || localAudioPath != null)
+
+private fun SettingsPage.saveableKey(): String = when (this) {
+    SettingsPage.Root -> "settings-root"
+    SettingsPage.Licenses -> "settings-licenses"
+    is SettingsPage.LicenseDetail -> "settings-license-$id"
+}
+
+private fun SettingsPage.depth(): Int = when (this) {
+    SettingsPage.Root -> 0
+    SettingsPage.Licenses -> 1
+    is SettingsPage.LicenseDetail -> 2
+}
 
 private fun Destination.key(): String = when (this) {
     Destination.Convert -> "convert"

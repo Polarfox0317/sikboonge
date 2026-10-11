@@ -36,6 +36,7 @@ internal fun MediaTile(
     thumbnail: @Composable (Modifier) -> Unit,
     actions: @Composable () -> Unit,
     modifier: Modifier = Modifier,
+    tags: List<String> = emptyList(),
 ) {
     val colors = MaterialTheme.colorScheme
     val container by animateColorAsState(
@@ -71,6 +72,11 @@ internal fun MediaTile(
                 maxLines = 2, overflow = TextOverflow.Ellipsis)
             Text(meta, style = MaterialTheme.typography.labelSmall,
                 color = colors.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (tags.isNotEmpty()) {
+                Text(tags.joinToString(" ") { "#$it" }, maxLines = 1,
+                    overflow = TextOverflow.Ellipsis, color = colors.primary,
+                    style = MaterialTheme.typography.labelSmall)
+            }
             if (!selectionMode) actions()
         }
     }

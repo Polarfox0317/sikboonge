@@ -34,6 +34,11 @@ internal object BotInboxRecoveryPolicy {
         isReady: Boolean,
     ): Boolean = hasBeenReady && !wasReady && isReady
 
+    fun shouldReconnectOnRefresh(
+        isConnected: Boolean,
+        reconnectInFlight: Boolean,
+    ): Boolean = !isConnected && !reconnectInFlight
+
     fun isCurrentRefresh(
         requestOwnerIsCurrent: Boolean,
         requestGeneration: Long,

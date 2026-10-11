@@ -1,0 +1,140 @@
+Google Material Symbols / Material Icons
+
+SVG geometry converted to Android VectorDrawable; local size, tint and variant adaptations. Apache-2.0.txt supplies the shared original license.
+
+
+
+ic_arrow_back.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/arrow_back/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_arrow_downward.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/arrow_downward/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_arrow_drop_down.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/arrow_drop_down/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_arrow_upward.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/arrow_upward/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_bot_delete.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/delete/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_bot_edit.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/edit/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_bot_open_in_new.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/open_in_new/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_bot_play.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/play_arrow/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_bot_save.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/save/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_check_circle.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/check_circle/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_check.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/check/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_close.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/close/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_drag_handle.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/drag_handle/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_grid_view.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/grid_view/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_keyboard_arrow_down.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/keyboard_arrow_down/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_keyboard_arrow_up.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/keyboard_arrow_up/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_library_list.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/view_list/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_media_audio.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/music_note/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_media_delete.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/delete/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_media_edit.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/edit/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_media_external.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/open_in_new/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_media_minimize.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/expand_more/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_media_pause.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/pause/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_media_play.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/play_arrow/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_media_queue.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/queue_music/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_media_save.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/download/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_media_seek_back_10.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/replay_10/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_media_seek_forward_10.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/forward_10/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_media_share.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/share/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_media_skip_next.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/skip_next/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_media_skip_previous.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/skip_previous/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_media_stop.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/stop/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_menu_audio_format.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/audio_file/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_menu_delete.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/delete/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_menu_open.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/menu_open/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_menu_refresh.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/refresh/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_menu_select.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/checklist/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_menu_settings.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/settings/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_menu.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/menu/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_more_vert.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/more_vert/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_play_arrow.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/play_arrow/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_playlist_add.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/playlist_add/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_search.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/search/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_smart_toy.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/smart_toy/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->
+
+ic_view_agenda.xml
+<!-- Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/view_agenda/fill1/24px.svg (Material Symbols Rounded, FILL=1, GRAD=0, OPSZ=24, WGHT=400). -->

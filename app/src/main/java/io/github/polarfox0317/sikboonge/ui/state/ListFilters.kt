@@ -3,6 +3,7 @@ package io.github.polarfox0317.sikboonge.ui.state
 import androidx.compose.runtime.Immutable
 import io.github.polarfox0317.sikboonge.AudioResult
 import io.github.polarfox0317.sikboonge.BotVideo
+import io.github.polarfox0317.sikboonge.TagPolicy
 import java.text.Collator
 import java.text.Normalizer
 import java.util.Locale
@@ -19,8 +20,9 @@ data class ListQuery(
     val sortKey: SortKey = SortKey.Date,
     val ascending: Boolean = false,
     val range: DateRange = DateRange.All,
+    val tags: Set<String> = emptySet(),
 ) {
-    val active: Boolean get() = text.isNotBlank() || range != DateRange.All
+    val active: Boolean get() = text.isNotBlank() || range != DateRange.All || tags.isNotEmpty()
 }
 
 fun filterLibrary(
@@ -28,8 +30,7 @@ fun filterLibrary(
     query: ListQuery,
     nowMs: Long = System.currentTimeMillis(),
 ): List<AudioResult> {
-    val terms = searchTerms(query.text)
-    val matches = items.filter { matchesName(it.name, terms) && matchesDate(it.date, query.range, nowMs) }
+    val matches = items.filter { matchesTextTerms(it.name, it.tags, query.text) && matchesTagFilter(it.tags, query.tags) && matchesDate(it.date, query.range, nowMs) }
     return sortItems(matches, query.sortKey, query.ascending, AudioResult::name, AudioResult::date)
 }
 
@@ -38,9 +39,8 @@ fun filterBot(
     query: ListQuery,
     nowMs: Long = System.currentTimeMillis(),
 ): List<BotVideo> {
-    val terms = searchTerms(query.text)
     // AudioResult timestamps are milliseconds; TDLib Message.date (BotVideo.date) is seconds.
-    val matches = items.filter { matchesName(it.displayName, terms) && matchesDate(it.date * 1_000L, query.range, nowMs) }
+    val matches = items.filter { matchesTextTerms(it.displayName, it.tags, query.text) && matchesTagFilter(it.tags, query.tags) && matchesDate(it.date * 1_000L, query.range, nowMs) }
     return sortItems(matches, query.sortKey, query.ascending, BotVideo::displayName) { it.date * 1_000L }
 }
 
@@ -50,9 +50,48 @@ private fun normalizedName(value: String): String =
 private fun searchTerms(value: String): List<String> =
     normalizedName(value).trim().split(Regex("[\\s\\p{Z}]+")).filter(String::isNotEmpty)
 
-private fun matchesName(name: String, terms: List<String>): Boolean {
-    val normalized = normalizedName(name)
-    return terms.all(normalized::contains)
+internal fun matchesTextTerms(title: String, tags: List<String>, text: String): Boolean {
+    val normalizedTitle = normalizedName(title)
+    val tagKeys = tags.map(TagPolicy::key)
+    return searchTerms(text).all { term ->
+        if (term.startsWith('#') && term.drop(1).isNotEmpty()) {
+            val tagTerm = term.drop(1)
+            tagKeys.any { it.contains(tagTerm) }
+        } else {
+            normalizedTitle.contains(term) || tagKeys.any { it.contains(term) }
+        }
+    }
+}
+
+internal fun matchesTagFilter(tags: List<String>, selected: Set<String>): Boolean {
+    if (selected.isEmpty()) return true
+    val itemKeys = tags.mapTo(hashSetOf(), TagPolicy::key)
+    return selected.all { TagPolicy.key(it) in itemKeys }
+}
+
+internal fun ListQuery.withAvailableTags(tags: List<List<String>>): ListQuery {
+    val available = tags.flatten().mapTo(hashSetOf(), TagPolicy::key)
+    return copy(tags = this.tags.mapTo(linkedSetOf(), TagPolicy::key).intersect(available))
+}
+
+internal fun applyBotTagOverrides(items: List<BotVideo>, overrides: Map<Long, List<String>>): List<BotVideo> =
+    items.map { video -> overrides[video.messageId]?.let { video.copy(tags = it) } ?: video }
+
+internal fun tagVocabulary(vararg sources: List<List<String>>): List<String> {
+    val displayByKey = linkedMapOf<String, String>()
+    val counts = mutableMapOf<String, Int>()
+    sources.forEach { source -> source.forEach { tags ->
+        TagPolicy.normalizeTags(tags).forEach { tag ->
+            val key = TagPolicy.key(tag)
+            displayByKey.putIfAbsent(key, tag)
+            counts[key] = (counts[key] ?: 0) + 1
+        }
+    } }
+    val collator = Collator.getInstance(Locale.KOREAN)
+    return displayByKey.keys.sortedWith { first, second ->
+        val byCount = counts.getValue(second).compareTo(counts.getValue(first))
+        if (byCount != 0) byCount else collator.compare(displayByKey.getValue(first), displayByKey.getValue(second))
+    }.map(displayByKey::getValue)
 }
 
 private fun matchesDate(dateMs: Long, range: DateRange, nowMs: Long): Boolean = when (range) {

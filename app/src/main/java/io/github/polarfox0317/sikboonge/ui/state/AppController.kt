@@ -20,9 +20,14 @@ import io.github.polarfox0317.sikboonge.AudioFormat
 import io.github.polarfox0317.sikboonge.AudioResult
 import io.github.polarfox0317.sikboonge.BotCredentials
 import io.github.polarfox0317.sikboonge.BotRuntime
+import io.github.polarfox0317.sikboonge.BotPrivateStore
 import io.github.polarfox0317.sikboonge.BotUiState
 import io.github.polarfox0317.sikboonge.BotVideo
+import io.github.polarfox0317.sikboonge.TagPolicy
 import io.github.polarfox0317.sikboonge.ConversionService
+import io.github.polarfox0317.sikboonge.DownloadExecutionMode
+import io.github.polarfox0317.sikboonge.DownloadExecutionPreferences
+import io.github.polarfox0317.sikboonge.ui.settings.licenses.OpenSourceLicenses
 import io.github.polarfox0317.sikboonge.ConversionState
 import io.github.polarfox0317.sikboonge.ExternalPlayback
 import io.github.polarfox0317.sikboonge.LibraryDownload
@@ -65,6 +70,7 @@ class AppController(
     private val controllerScope = CoroutineScope(Dispatchers.Main.immediate + controllerJob)
     private val interaction = MutableStateFlow(InteractionState(
         saveFormat = AudioFormat.entries.firstOrNull { it.name == savedUiPreferences.getString("save_format", null) } ?: AudioFormat.ORIGINAL,
+        downloadExecutionMode = DownloadExecutionPreferences.load(appContext),
         libraryLayout = ListLayout.entries.firstOrNull { it.name == savedUiPreferences.getString("library_layout", null) } ?: ListLayout.List,
         botLayout = ListLayout.entries.firstOrNull { it.name == savedUiPreferences.getString("bot_layout", null) } ?: ListLayout.List,
         notificationsAllowed = notificationsAllowed(),
@@ -78,7 +84,6 @@ class AppController(
     private var pendingConversionUri: String? = null
     private var preservePlayerSizeSourceKey: String? = null
     private var preservePlayerSizeBotQueueKey: String? = null
-    private var lastAnnouncedBotSaveCompletionId = AppStore.state.value.botSaveCompletionId
     private var lastAnnouncedDownloadCancellationId = AppStore.cancelledDownloadId.value
     private val pendingNotificationPermissionActions = mutableListOf<(Boolean) -> Unit>()
     private var notificationPermissionRequestInFlight = false
@@ -105,14 +110,24 @@ class AppController(
 
     init {
         controllerScope.launch {
-            combine(AppStore.state, botState) { conversion, bot -> conversion to bot }
-                .collect { (conversion, bot) ->
+            combine(AppStore.state, AppStore.downloads, botState, StreamPlayback.state) { conversion, downloads, bot, stream ->
+                SavePreparationInputs(conversion, downloads, bot, stream)
+            }.collect { inputs ->
+                    val conversion = inputs.conversion
+                    val downloads = inputs.downloads
+                    val bot = inputs.bot
+                    val stream = inputs.stream
                     interaction.update { input ->
                         input.copy(
-                            preparingBotSaveMessageId = input.preparingBotSaveMessageId.takeUnless {
-                                conversion.running || bot.error != null || !bot.connected
+                            preparingBotSaveSources = input.preparingBotSaveSources.filter { (messageId, fileId) ->
+                                bot.connected && bot.error == null &&
+                                bot.videos.any { it.messageId == messageId && it.fileId == fileId } &&
+                                    downloads.none { download -> download.sourceBotFileId == fileId }
                             },
-                            playerSaveSourceKey = input.playerSaveSourceKey.takeIf { conversion.running },
+                            preparingPlayerSaveSourceKey = input.preparingPlayerSaveSourceKey.takeIf { pendingSourceKey ->
+                                sourceKey(stream) == pendingSourceKey && bot.connected && bot.error == null &&
+                                    downloads.none { it.sourceBotFileId == stream.botFileId }
+                            },
                             botSetupRequested = input.botSetupRequested && !bot.connected,
                         )
                     }
@@ -191,13 +206,8 @@ class AppController(
                 }
         }
         controllerScope.launch {
-            AppStore.state.map { it.origin to it.botSaveCompletionId }
-                .distinctUntilChanged().collect { (origin, completionId) ->
-                    if (origin == io.github.polarfox0317.sikboonge.ConversionOrigin.BOT_SAVE &&
-                        completionId != null && completionId != lastAnnouncedBotSaveCompletionId) {
-                        lastAnnouncedBotSaveCompletionId = completionId
-                        notice("오디오를 보관함에 저장했어요.")
-                    }
+            AppStore.botSaveCompletions.collect {
+                notice("오디오를 보관함에 저장했어요.")
                 }
         }
         controllerScope.launch {
@@ -246,11 +256,19 @@ class AppController(
         putString("saveFormat", input.saveFormat.name)
         putString("libraryLayout", input.libraryLayout.name)
         putString("botLayout", input.botLayout.name)
+        saveQuery(this, "libraryQuery", input.libraryQuery)
+        saveQuery(this, "botQuery", input.botQuery)
         putString("settingsOrigin", when (input.settingsOrigin) {
             Destination.Library -> "library"
             Destination.Bot -> "bot"
             else -> "convert"
         })
+        putString("settingsPage", when (input.settingsPage) {
+            SettingsPage.Root -> "root"
+            SettingsPage.Licenses -> "licenses"
+            is SettingsPage.LicenseDetail -> "license_detail"
+        })
+        putString("settingsLicenseId", (input.settingsPage as? SettingsPage.LicenseDetail)?.id)
         putBoolean("botSetupRequested", input.botSetupRequested)
         putBoolean("playerExpanded", input.playerExpanded)
         putString("playerSourceKey", lastPlayerSourceKey)
@@ -269,6 +287,13 @@ class AppController(
             .mapNotNull { key -> AudioFormat.entries.firstOrNull { it.name == saved.getString(key) } }
             .firstOrNull() ?: AudioFormat.ORIGINAL
         fun layout(key: String) = ListLayout.entries.firstOrNull { it.name == saved.getString(key) } ?: ListLayout.List
+        fun query(key: String): ListQuery = ListQuery(
+            text = saved.getString("${key}Text").orEmpty(),
+            sortKey = SortKey.entries.firstOrNull { it.name == saved.getString("${key}Sort") } ?: SortKey.Date,
+            ascending = saved.getBoolean("${key}Ascending"),
+            range = DateRange.entries.firstOrNull { it.name == saved.getString("${key}Range") } ?: DateRange.All,
+            tags = saved.getStringArrayList("${key}Tags").orEmpty().mapTo(linkedSetOf(), TagPolicy::key),
+        )
         handledIncomingEventToken = saved.getInt("handledIncomingEventToken")
         val currentSourceKey = sourceKey(StreamPlayback.state.value)
         val sameSource = saved.getString("playerSourceKey") == currentSourceKey
@@ -296,11 +321,19 @@ class AppController(
             videoDurationMs = saved.getLong("videoDurationMs", -1L).takeIf { it > 0L },
             videoArtworkPath = saved.getString("videoArtworkPath")?.takeIf { SelectedVideoThumbnail.isCachedFile(appContext, it) },
             saveFormat = savedFormat, libraryLayout = layout("libraryLayout"), botLayout = layout("botLayout"),
+            libraryQuery = query("libraryQuery"), botQuery = query("botQuery"),
             settingsOrigin = when (saved.getString("settingsOrigin")) {
                 "library" -> Destination.Library
                 "bot" -> Destination.Bot
                 "convert", "listen" -> Destination.Convert
                 else -> Destination.Bot
+            },
+            settingsPage = when (saved.getString("settingsPage")) {
+                "licenses" -> SettingsPage.Licenses
+                "license_detail" -> saved.getString("settingsLicenseId")
+                    ?.takeIf { OpenSourceLicenses.find(it) != null }
+                    ?.let { SettingsPage.LicenseDetail(it) } ?: SettingsPage.Licenses
+                else -> SettingsPage.Root
             },
             botSetupRequested = saved.getBoolean("botSetupRequested") && !botState.value.connected,
             playerExpanded = if (sameSource) saved.getBoolean("playerExpanded", true) else true,
@@ -325,7 +358,7 @@ class AppController(
             Destination.Settings -> input.settingsOrigin
             else -> input.destination
         } }
-        interaction.update { it.copy(destination = destination, pendingLibraryDelete = null, pendingBotDelete = null) }
+        interaction.update { it.copy(destination = destination, settingsPage = SettingsPage.Root, pendingLibraryDelete = null, pendingBotDelete = null) }
         onClearSelection()
         return oldTopLevel == destination
     }
@@ -334,7 +367,21 @@ class AppController(
         val origin = interaction.value.destination
         if (origin != Destination.Convert && origin != Destination.Library && origin != Destination.Bot) return
         onClearSelection()
-        interaction.update { it.copy(destination = Destination.Settings, settingsOrigin = origin, pendingLibraryDelete = null, pendingBotDelete = null) }
+        interaction.update { it.copy(destination = Destination.Settings, settingsOrigin = origin, settingsPage = SettingsPage.Root, pendingLibraryDelete = null, pendingBotDelete = null) }
+    }
+
+    override fun onOpenLicenses() {
+        if (interaction.value.destination != Destination.Settings) return
+        interaction.update { it.copy(settingsPage = SettingsPage.Licenses) }
+    }
+
+    override fun onOpenLicense(id: String) {
+        if (interaction.value.destination != Destination.Settings) return
+        if (OpenSourceLicenses.find(id) == null) {
+            notice("라이선스 항목을 찾지 못했어요. 목록에서 다시 선택해 주세요.", true)
+            return
+        }
+        interaction.update { it.copy(settingsPage = SettingsPage.LicenseDetail(id)) }
     }
 
     override fun onOpenBotSetup() {
@@ -351,7 +398,11 @@ class AppController(
         interaction.value.selectionMode -> { onClearSelection(); true }
         interaction.value.destination == Destination.Bot && interaction.value.botSetupRequested -> { onCloseBotSetup(); true }
         interaction.value.destination == Destination.Settings -> {
-            interaction.update { it.copy(destination = it.settingsOrigin) }; true
+            interaction.update { input -> when (input.settingsPage) {
+                is SettingsPage.LicenseDetail -> input.copy(settingsPage = SettingsPage.Licenses)
+                SettingsPage.Licenses -> input.copy(settingsPage = SettingsPage.Root)
+                SettingsPage.Root -> input.copy(destination = input.settingsOrigin)
+            } }; true
         }
         interaction.value.destination != Destination.Bot -> { onTopLevelSelected(Destination.Bot); true }
         else -> false
@@ -431,26 +482,83 @@ class AppController(
     }
 
     override fun onSaveFormatChanged(value: AudioFormat) {
-        if (AppStore.state.value.running || interaction.value.preparingBotSaveMessageId != null) return
+        if (AppStore.state.value.running || interaction.value.preparingBotSaveSources.isNotEmpty()) return
         savedUiPreferences.edit().putString("save_format", value.name).apply()
         interaction.update { it.copy(saveFormat = value) }
+    }
+
+    override fun onDownloadExecutionModeChanged(value: DownloadExecutionMode) {
+        DownloadExecutionPreferences.save(appContext, value)
+        interaction.update { it.copy(downloadExecutionMode = value) }
     }
 
     override fun onLibraryQueryChanged(query: ListQuery) = updateLibraryQuery(query, AppStore.history.value)
 
     /** Debug fixtures supply their own data while retaining the controller-owned query and selection. */
     internal fun updateLibraryQuery(query: ListQuery, items: List<AudioResult>) {
-        val visiblePaths = filterLibrary(items, query).mapTo(mutableSetOf(), AudioResult::path)
-        interaction.update { it.copy(libraryQuery = query,
+        val normalizedQuery = query.copy(tags = query.tags.mapTo(linkedSetOf(), TagPolicy::key))
+        val visiblePaths = filterLibrary(items, normalizedQuery).mapTo(mutableSetOf(), AudioResult::path)
+        interaction.update { it.copy(libraryQuery = normalizedQuery,
             selectedAudioPaths = if (it.selectionMode) it.selectedAudioPaths.intersect(visiblePaths) else it.selectedAudioPaths) }
     }
 
     override fun onBotQueryChanged(query: ListQuery) = updateBotQuery(query, botState.value.videos)
 
     internal fun updateBotQuery(query: ListQuery, items: List<BotVideo>) {
-        val visibleIds = filterBot(items, query).mapTo(mutableSetOf(), BotVideo::messageId)
-        interaction.update { it.copy(botQuery = query,
+        val normalizedQuery = query.copy(tags = query.tags.mapTo(linkedSetOf(), TagPolicy::key))
+        val overrides = interaction.value.botVideoTagsOverrides
+        val visibleIds = filterBot(applyBotTagOverrides(items, overrides), normalizedQuery).mapTo(mutableSetOf(), BotVideo::messageId)
+        interaction.update { it.copy(botQuery = normalizedQuery,
             selectedBotMessageIds = if (it.selectionMode) it.selectedBotMessageIds.intersect(visibleIds) else it.selectedBotMessageIds) }
+    }
+
+    override fun onSetAudioTags(result: AudioResult, tags: List<String>) {
+        val normalized = TagPolicy.normalizeTags(tags)
+        controllerScope.launch {
+            val outcome = withContext(Dispatchers.IO) { runCatching { AppStore.setTags(appContext, result.path, normalized) } }
+            outcome.fold(
+                onSuccess = { updated ->
+                    if (updated == null) {
+                        notice("태그를 저장하지 못했어요.", true)
+                        return@fold
+                    }
+                    val rows = AppStore.history.value
+                    interaction.update { input -> input.copy(
+                        libraryQuery = input.libraryQuery.withAvailableTags(rows.map(AudioResult::tags)),
+                        pendingSaveResult = input.pendingSaveResult?.let { pending -> if (pending.path == updated.path) updated else pending },
+                    ) }
+                    notice("태그를 저장했어요.")
+                },
+                onFailure = { notice("태그를 저장하지 못했어요.", true) },
+            )
+        }
+    }
+
+    override fun onSetBotVideoTags(video: BotVideo, tags: List<String>) {
+        val normalized = TagPolicy.normalizeTags(tags)
+        controllerScope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                runCatching { BotPrivateStore(appContext).setVideoTags(video.chatId, video.messageId, normalized) }
+            }
+            outcome.fold(
+                onSuccess = { updated ->
+                    if (updated == null) {
+                        notice("태그를 저장하지 못했어요.", true)
+                        return@fold
+                    }
+                    interaction.update { input ->
+                        val overrides = input.botVideoTagsOverrides + (updated.messageId to updated.tags)
+                        val current = applyBotTagOverrides(botState.value.videos, overrides)
+                        input.copy(
+                            botVideoTagsOverrides = overrides,
+                            botQuery = input.botQuery.withAvailableTags(current.map(BotVideo::tags)),
+                        )
+                    }
+                    notice("태그를 저장했어요.")
+                },
+                onFailure = { notice("태그를 저장하지 못했어요.", true) },
+            )
+        }
     }
 
     override fun onLayoutChanged(destination: Destination, layout: ListLayout) {
@@ -474,6 +582,16 @@ class AppController(
                 .setAction(ConversionService.ACTION_CANCEL_DOWNLOAD)
                 .putExtra(ConversionService.EXTRA_DOWNLOAD_ID, id),
         )
+    }
+    override fun onPauseDownload(id: Long) {
+        appContext.startService(Intent(appContext, ConversionService::class.java)
+            .setAction(ConversionService.ACTION_PAUSE_DOWNLOAD)
+            .putExtra(ConversionService.EXTRA_DOWNLOAD_ID, id))
+    }
+    override fun onResumeDownload(id: Long) {
+        appContext.startForegroundService(Intent(appContext, ConversionService::class.java)
+            .setAction(ConversionService.ACTION_RESUME_DOWNLOAD)
+            .putExtra(ConversionService.EXTRA_DOWNLOAD_ID, id))
     }
     override fun onRequestNotificationPermission() {
         if (notificationsAllowed()) {
@@ -706,17 +824,25 @@ class AppController(
         // Freeze source metadata now; later UI changes cannot retarget this save.
         val stream = StreamPlayback.state.value
         val botFileId = stream.botFileId ?: return
-        if (stream.source != PlaybackSource.BOT || AppStore.state.value.running || !botState.value.connected) return
+        if (stream.source != PlaybackSource.BOT || !botState.value.connected) return
+        val sourceKey = sourceKey(stream)
+        if (interaction.value.preparingPlayerSaveSourceKey == sourceKey ||
+            AppStore.downloads.value.any { it.sourceBotFileId == botFileId }) return
         val input = interaction.value
         val request = conversionIntent(input.saveFormat)
             .putExtra("name", stream.title)
             .putExtra(AudioArtworkStore.EXTRA_ARTWORK_PATH, stream.artworkPath)
             .putExtra(AudioArtworkStore.EXTRA_ARTWORK_BASE64, stream.artworkBase64)
         request.putExtra(BotRuntime.EXTRA_TDLIB_FILE_ID, botFileId)
+            .putExtra(ConversionService.EXTRA_SOURCE_BOT_GENERATION, BotRuntime.audioSaveGeneration())
             .putExtra(BotRuntime.EXTRA_TDLIB_NAME, stream.title)
             .putExtra(BotRuntime.EXTRA_TDLIB_SIZE, stream.sourceBytes)
-        interaction.update { it.copy(playerSaveSourceKey = sourceKey(stream)) }
-        startConversion(request, "오디오 저장 준비 중", "오디오 저장을 시작하지 못했어요. 앱을 다시 열고 시도해 주세요.")
+        interaction.update { it.copy(preparingPlayerSaveSourceKey = sourceKey) }
+        interaction.update { it.copy(playerSaveSourceKey = sourceKey) }
+        if (!startConversion(request, "오디오 저장 준비 중", "오디오 저장을 시작하지 못했어요. 앱을 다시 열고 시도해 주세요.")) {
+            interaction.update { it.copy(playerSaveSourceKey = null) }
+            interaction.update { it.copy(preparingPlayerSaveSourceKey = null) }
+        }
     }
 
     override fun onExternalPlayAudio(result: AudioResult) {
@@ -769,6 +895,7 @@ class AppController(
         if (playingPath != null && playingPath in paths) StreamPlayback.stop()
         try {
             val outcome = AppStore.removeMany(appContext, results)
+            updateLibraryQuery(interaction.value.libraryQuery.withAvailableTags(AppStore.history.value.map(AudioResult::tags)), AppStore.history.value)
             removeQueueItems(results.mapTo(mutableSetOf()) { queueItem(it).key })
             if (outcome.failedFileDeletes == 0) notice("보관함에서 ${outcome.removedEntries}개 항목을 삭제했어요.")
             else notice("보관함에서 ${results.size}개 항목을 제거했지만 일부 파일을 삭제하지 못했어요.", true)
@@ -787,7 +914,8 @@ class AppController(
                 interaction.update { it.copy(selectedAudioPaths = if (paths.isNotEmpty() && it.selectedAudioPaths.containsAll(paths)) emptySet() else paths) }
             }
             Destination.Bot -> {
-                val ids = filterBot(botState.value.videos, interaction.value.botQuery).mapTo(mutableSetOf(), BotVideo::messageId)
+                val input = interaction.value
+                val ids = filterBot(applyBotTagOverrides(botState.value.videos, input.botVideoTagsOverrides), input.botQuery).mapTo(mutableSetOf(), BotVideo::messageId)
                 interaction.update { it.copy(selectedBotMessageIds = if (ids.isNotEmpty() && it.selectedBotMessageIds.containsAll(ids)) emptySet() else ids) }
             }
             else -> Unit
@@ -808,20 +936,21 @@ class AppController(
         BotRuntime.pair(appContext)?.let(::onOpenExternalUrl)
     }
     override fun onRefreshBot() {
-        val bot = botState.value
-        if (interaction.value.destination == Destination.Bot && bot.connected && bot.paired && !bot.busy && !bot.refreshing) BotRuntime.refreshInbox(appContext)
+        if (interaction.value.destination == Destination.Bot) BotRuntime.refreshInbox(appContext)
     }
     override fun onSaveBotVideo(video: BotVideo, format: AudioFormat) {
-        if (!canUseBotVideo(video) || AppStore.state.value.running || interaction.value.preparingBotSaveMessageId != null) return
-        interaction.update { it.copy(preparingBotSaveMessageId = video.messageId) }
-        onRequestNotificationPermissionThen {
-            if (!canUseBotVideo(video)) {
-                interaction.update { it.copy(preparingBotSaveMessageId = null) }
-                return@onRequestNotificationPermissionThen
-            }
-            notice("보관함에 저장할 오디오를 준비하고 있어요.")
-            BotRuntime.save(appContext, video, interaction.value.saveFormat.name)
+        if (!canUseBotVideo(video)) return
+        if (video.messageId in interaction.value.preparingBotSaveSources ||
+            video.fileId in interaction.value.preparingBotSaveSources.values ||
+            AppStore.downloads.value.any { it.sourceBotFileId == video.fileId }) return
+        interaction.update {
+            it.copy(
+                preparingBotSaveSources = it.preparingBotSaveSources + (video.messageId to video.fileId),
+            )
         }
+        // Accept the click before permission prompts or asynchronous metadata can reorder it.
+        BotRuntime.save(appContext, video, format.name)
+        onRequestNotificationPermission()
     }
     override fun onRenameBotVideo(video: BotVideo, title: String) {
         BotRuntime.renameVideo(appContext, video, title) { error ->
@@ -848,13 +977,21 @@ class AppController(
         val fileIds = targets.mapNotNull { it.fileId.takeIf { id -> id > 0 } }.toSet()
         val playingFileId = StreamPlayback.state.value.botFileId
         if (playingFileId != null && playingFileId in fileIds) StreamPlayback.stop()
-        interaction.update { it.copy(pendingBotDelete = null, preparingBotSaveMessageId = it.preparingBotSaveMessageId.takeUnless { id -> id != null && id in targetIds }) }
+        interaction.update {
+            it.copy(
+                pendingBotDelete = null,
+                preparingBotSaveSources = it.preparingBotSaveSources - targetIds,
+            )
+        }
         fileIds.forEach { fileId -> runCatching {
             appContext.startService(Intent(appContext, ConversionService::class.java).setAction("cancel_bot").putExtra(BotRuntime.EXTRA_TDLIB_FILE_ID, fileId))
         } }
         BotRuntime.removeVideos(appContext, targetIds) { error ->
             controllerScope.launch {
                 if (error == null) {
+                    interaction.update { it.copy(botVideoTagsOverrides = it.botVideoTagsOverrides - targetIds) }
+                    val rows = applyBotTagOverrides(botState.value.videos.filterNot { it.messageId in targetIds }, interaction.value.botVideoTagsOverrides)
+                    updateBotQuery(interaction.value.botQuery.withAvailableTags(rows.map(BotVideo::tags)), rows)
                     removeQueueItems(targets.mapTo(mutableSetOf()) { queueItem(it).key })
                     notice("봇 목록에서 ${targets.size}개 항목을 삭제했어요. Telegram 메시지는 유지돼요.")
                     if (interaction.value.selectionMode) onClearSelection()
@@ -907,15 +1044,27 @@ class AppController(
             ?: AppStore.state.value.result?.takeIf { canonicalPath(it.path) == path }
     }
     private fun conversionIntent(format: AudioFormat) = Intent(appContext, ConversionService::class.java).putExtra("format", format.name)
-    private fun startConversion(request: Intent, stage: String, failure: String) {
+    private fun saveQuery(bundle: Bundle, key: String, query: ListQuery) {
+        bundle.putString("${key}Text", query.text)
+        bundle.putString("${key}Sort", query.sortKey.name)
+        bundle.putBoolean("${key}Ascending", query.ascending)
+        bundle.putString("${key}Range", query.range.name)
+        bundle.putStringArrayList("${key}Tags", ArrayList(query.tags))
+    }
+    private fun startConversion(request: Intent, stage: String, failure: String): Boolean {
         val origin = if (request.getIntExtra(BotRuntime.EXTRA_TDLIB_FILE_ID, 0) > 0) {
             io.github.polarfox0317.sikboonge.ConversionOrigin.BOT_SAVE
         } else {
             io.github.polarfox0317.sikboonge.ConversionOrigin.LOCAL_CONVERT
         }
         AppStore.state.value = ConversionState(origin = origin, running = true, stage = stage)
-        try { appContext.startForegroundService(request) }
-        catch (_: Exception) { AppStore.state.value = ConversionState(origin = origin, error = failure) }
+        return try {
+            appContext.startForegroundService(request)
+            true
+        } catch (_: Exception) {
+            AppStore.state.value = ConversionState(origin = origin, error = failure)
+            false
+        }
     }
     private fun notice(text: String, error: Boolean = false, context: UserFacingErrors.Context = UserFacingErrors.Context.GENERAL) {
         val sanitized = if (error) UserFacingErrors.fromErrorString(text, context) ?: return else text
@@ -971,11 +1120,14 @@ private data class InteractionState(
     val videoDurationMs: Long? = null,
     val videoArtworkPath: String? = null,
     val saveFormat: AudioFormat = AudioFormat.ORIGINAL,
+    val downloadExecutionMode: DownloadExecutionMode = DownloadExecutionMode.Parallel,
     val libraryQuery: ListQuery = ListQuery(),
     val botQuery: ListQuery = ListQuery(),
+    val botVideoTagsOverrides: Map<Long, List<String>> = emptyMap(),
     val libraryLayout: ListLayout = ListLayout.List,
     val botLayout: ListLayout = ListLayout.List,
     val settingsOrigin: Destination = Destination.Bot,
+    val settingsPage: SettingsPage = SettingsPage.Root,
     val botSetupRequested: Boolean = false,
     val botApiIdText: String = "",
     val botApiHash: String = "",
@@ -988,7 +1140,8 @@ private data class InteractionState(
     val pendingSaveResult: AudioResult? = null,
     val saving: Boolean = false,
     val renamingAudioPath: String? = null,
-    val preparingBotSaveMessageId: Long? = null,
+    val preparingBotSaveSources: Map<Long, Int> = emptyMap(),
+    val preparingPlayerSaveSourceKey: String? = null,
     val notificationsAllowed: Boolean = false,
     val diagnosticsAvailable: Boolean = false,
     val playerExpanded: Boolean = true,
@@ -1007,15 +1160,22 @@ private data class InteractionState(
         stream: StreamingState,
         bot: BotUiState,
     ) = AppUiState(
+        bot = bot.copy(videos = applyBotTagOverrides(bot.videos, botVideoTagsOverrides)),
+        libraryTagVocabulary = tagVocabulary(history.map(AudioResult::tags)),
+        botTagVocabulary = tagVocabulary(bot.videos.map { video -> botVideoTagsOverrides[video.messageId] ?: video.tags }),
+        allTagVocabulary = tagVocabulary(history.map(AudioResult::tags), bot.videos.map { video -> botVideoTagsOverrides[video.messageId] ?: video.tags }),
         destination = destination, videoUri = videoUri, videoName = videoName,
         videoSizeBytes = videoSizeBytes, videoDurationMs = videoDurationMs, videoArtworkPath = videoArtworkPath,
-        saveFormat = saveFormat, libraryQuery = libraryQuery, botQuery = botQuery,
-        libraryLayout = libraryLayout, botLayout = botLayout, settingsOrigin = settingsOrigin,
+        saveFormat = saveFormat, downloadExecutionMode = downloadExecutionMode,
+        libraryQuery = libraryQuery, botQuery = botQuery,
+        libraryLayout = libraryLayout, botLayout = botLayout, settingsOrigin = settingsOrigin, settingsPage = settingsPage,
         conversion = conversion, history = history, downloads = downloads,
-        stream = stream, bot = bot, botSetupRequested = botSetupRequested, botApiIdText = botApiIdText, botApiHash = botApiHash, botToken = botToken,
+        stream = stream, botSetupRequested = botSetupRequested, botApiIdText = botApiIdText, botApiHash = botApiHash, botToken = botToken,
         selectionMode = selectionMode, selectedAudioPaths = selectedAudioPaths, selectedBotMessageIds = selectedBotMessageIds,
         pendingLibraryDelete = pendingLibraryDelete, pendingBotDelete = pendingBotDelete, pendingSaveResult = pendingSaveResult,
-        saving = saving, renamingAudioPath = renamingAudioPath, preparingBotSaveMessageId = preparingBotSaveMessageId,
+        saving = saving, renamingAudioPath = renamingAudioPath,
+        preparingBotSaveSources = preparingBotSaveSources,
+        preparingPlayerSaveSourceKey = preparingPlayerSaveSourceKey,
         notificationsAllowed = notificationsAllowed, diagnosticsAvailable = diagnosticsAvailable,
         playerExpanded = playerExpanded, playerSaveSourceKey = playerSaveSourceKey,
         queue = queue, queueIndex = queueIndex, queueVisible = queueVisible,
@@ -1027,4 +1187,11 @@ private data class SelectedVideoMetadata(
     val name: String,
     val sizeBytes: Long?,
     val durationMs: Long?,
+)
+
+private data class SavePreparationInputs(
+    val conversion: ConversionState,
+    val downloads: List<LibraryDownload>,
+    val bot: BotUiState,
+    val stream: StreamingState,
 )

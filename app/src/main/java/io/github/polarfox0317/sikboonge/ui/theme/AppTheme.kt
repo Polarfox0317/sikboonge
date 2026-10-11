@@ -16,9 +16,10 @@ import androidx.compose.ui.platform.LocalContext
 @Composable
 internal fun AppTheme(
     useStaticColors: Boolean = false,
+    darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit,
 ) {
-    val dark = isSystemInDarkTheme()
+    val dark = darkTheme
     val context = LocalContext.current
     val colors = when {
         !useStaticColors && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->

@@ -214,12 +214,12 @@ object AudioEngine {
         try {
             if (!latch.await(timeoutSeconds, TimeUnit.SECONDS)) {
                 cancel(session.sessionId)
-                latch.await(15, TimeUnit.SECONDS)
+                awaitBotWorkerStopped(latch)
                 throw IllegalArgumentException("오디오 추출 시간이 초과됐어요. 다시 시도해 주세요.")
             }
         } catch (e: InterruptedException) {
             cancel(session.sessionId)
-            latch.await(15, TimeUnit.SECONDS)
+            awaitBotWorkerStopped(latch)
             throw e
         }
         if (cancelled) throw InterruptedException()

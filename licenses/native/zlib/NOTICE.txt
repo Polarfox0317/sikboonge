@@ -1,0 +1,4 @@
+Android platform zlib system library attribution
+Copyright (C) 1995-2017 Jean-loup Gailly and Mark Adler
+Source: https://android.googlesource.com/platform/external/zlib/
+This app uses the device-provided libz.so; it does not bundle an independent zlib binary. The applicable device source/version varies by Android system image.

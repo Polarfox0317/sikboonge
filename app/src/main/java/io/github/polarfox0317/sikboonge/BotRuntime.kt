@@ -86,6 +86,8 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
     private val thumbnailDownloads = mutableSetOf<Int>()
     private val transferErrors = mutableMapOf<Int, String>()
     private var inboxRefreshInFlight = false
+    private var reconnectInFlight = false
+    private var reconnectRequestGeneration = 0L
     private var inboxRefreshRequestId = 0L
     private var lastInboxRefreshStartedMs = 0L
     private var inboxRefreshTimeout: java.util.concurrent.ScheduledFuture<*>? = null
@@ -94,6 +96,7 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
     private var closingClient: Client? = null
     private var closingGeneration = 0L
     private var closingClearAccount = false
+    private var pendingReconnectContext: Context? = null
 
     /** Call when the app returns to the foreground; this does not start an always-on service. */
     fun setup(context: Context) {
@@ -287,6 +290,7 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
             authWatchdog?.cancel(false)
             authWatchdog = authScheduler.schedule({
                 if (generation == clientGeneration && !ready) {
+                    finishReconnectAttempt()
                     publish { copy(busy = false, connected = false, status = "연결 시간이 초과됐어요", error = "네트워크를 확인하고 다시 연결해 주세요.") }
                 }
             }, 60, TimeUnit.SECONDS)
@@ -298,8 +302,18 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
                     }
                     io.execute { if (generation == clientGeneration) onObject(context, obj) }
                 },
-                Client.ExceptionHandler { if (generation == clientGeneration) publish { copy(error = "Telegram 연결을 시작하지 못했어요.") } },
-                Client.ExceptionHandler { if (generation == clientGeneration) publish { copy(error = "Telegram 내부 통신에 문제가 있어요.") } },
+                Client.ExceptionHandler {
+                    if (generation == clientGeneration) {
+                        finishReconnectAttempt()
+                        publish { copy(busy = false, connected = false, error = "Telegram 연결을 시작하지 못했어요.") }
+                    }
+                },
+                Client.ExceptionHandler {
+                    if (generation == clientGeneration) {
+                        finishReconnectAttempt()
+                        publish { copy(busy = false, connected = false, error = "Telegram 내부 통신에 문제가 있어요.") }
+                    }
+                },
             )
             val waitingContext = synchronized(lock) {
                 client = tdClient
@@ -353,6 +367,7 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
                     authWatchdog?.cancel(false); authWatchdog = null
                     ready = false
                     client = null
+                    finishReconnectAttempt()
                     publish { copy(connected = false, busy = false, refreshing = false, status = "연결 해제됨") }
                 }
             }
@@ -476,6 +491,7 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
 
     private fun authFailure(code: Int) {
         cancelInboxRefresh()
+        finishReconnectAttempt()
         publish {
             copy(
                 busy = false,
@@ -489,6 +505,7 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
 
     private fun onReady(context: Context) {
         ready = true
+        finishReconnectAttempt()
         authWatchdog?.cancel(false)
         authWatchdog = null
         val saved = BotPrivateStore(context)
@@ -664,6 +681,7 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
         val app = context.applicationContext
         appContext = app
         var request: InboxRefreshRequest? = null
+        var shouldReconnect = false
         var diagnostic: String? = null
         var error: String? = null
         var clearRefreshing = false
@@ -671,8 +689,20 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
             val ui = mutableState.value
             when {
                 inboxRefreshInFlight -> diagnostic = "받은 영상 새로고침을 진행하고 있어요."
+                reconnectInFlight -> diagnostic = "Telegram 연결을 다시 시도하고 있어요."
+                ui.busy && client != null && authWatchdog?.isDone == false ->
+                    diagnostic = "Telegram 인증 연결을 진행하고 있어요."
+                BotInboxRecoveryPolicy.shouldReconnectOnRefresh(
+                    isConnected = ready && client != null && ui.connected,
+                    reconnectInFlight = reconnectInFlight,
+                ) -> {
+                    reconnectInFlight = true
+                    reconnectRequestGeneration++
+                    shouldReconnect = true
+                    diagnostic = "저장된 봇 설정과 받은 영상을 유지하며 Telegram에 다시 연결하고 있어요."
+                }
                 !ready || client == null || !ui.connected -> {
-                    diagnostic = "봇 연결이 완료된 뒤 새로고침할 수 있어요."
+                    diagnostic = "저장된 봇 설정을 사용해 다시 연결하고 있어요."
                     error = "Telegram 봇에 연결한 뒤 다시 시도해 주세요."
                     clearRefreshing = true
                 }
@@ -706,6 +736,21 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
                     }, REFRESH_TIMEOUT_MS, TimeUnit.MILLISECONDS)
                 }
             }
+        }
+        if (shouldReconnect) {
+            publish {
+                copy(
+                    busy = true,
+                    connected = false,
+                    refreshing = false,
+                    status = "Telegram에 다시 연결하는 중",
+                    receiveDiagnostic = diagnostic ?: receiveDiagnostic,
+                    error = null,
+                    videos = synchronized(lock) { BotRuntime.videos.values.toList().ifEmpty { videos } },
+                )
+            }
+            io.execute { reconnectForInboxRefresh(app) }
+            return
         }
         val ticket = request
         if (ticket == null) {
@@ -791,6 +836,165 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
                 "새로고침을 시작하지 못했어요. 잠시 후 다시 시도해 주세요.",
             )
         }
+    }
+
+    /** Retry the existing paired account without clearing its credentials, pairing, or inbox. */
+    private fun reconnectForInboxRefresh(context: Context) {
+        var keepReconnectGuard = false
+        try {
+            val value = credentials ?: when (val result = runCatching { BotCredentialsStore(context).loadResult() }
+                .getOrElse { BotCredentialsReadResult.Unreadable }) {
+                is BotCredentialsReadResult.Available -> result.credentials.also { credentials = it }
+                BotCredentialsReadResult.Missing, BotCredentialsReadResult.Unreadable -> {
+                    publish {
+                        copy(
+                            busy = false,
+                            connected = false,
+                            paired = paired || pairedUserId > 0L && pairedChatId > 0L,
+                            setupComplete = setupComplete || paired,
+                            videos = synchronized(lock) { BotRuntime.videos.values.toList().ifEmpty { videos } },
+                            status = "연결 정보를 확인하지 못했어요",
+                            error = "저장된 봇 설정을 찾거나 읽을 수 없어요. 설정에서 인증 정보를 확인해 주세요. pairing과 받은 영상은 보존돼 있어요.",
+                            needsReconnect = true,
+                        )
+                    }
+                    return
+                }
+            }
+            val state = synchronized(lock) {
+                val hasLeases = playbackLeases.isNotEmpty() || saveLeases.isNotEmpty()
+                if (hasLeases && client == null && !closingClearAccount) {
+                    pendingReconnectContext = context.applicationContext
+                }
+                Triple(hasLeases, closingClearAccount, client)
+            }
+            val leasedClient = state.third
+            if (state.first && leasedClient != null && !state.second) {
+                keepReconnectGuard = true
+                val (requestGeneration, clientGenerationAtRequest) = synchronized(lock) {
+                    reconnectRequestGeneration to clientGeneration
+                }
+                leasedClient.send(TdApi.SetNetworkType(TdApi.NetworkTypeOther())) { result ->
+                    io.execute {
+                        val current = synchronized(lock) {
+                            reconnectRequestGeneration == requestGeneration &&
+                                clientGeneration == clientGenerationAtRequest && client === leasedClient
+                        }
+                        if (!current) return@execute
+                        finishReconnectAttempt(requestGeneration)
+                        if (result is TdApi.Error) {
+                            publish {
+                                copy(
+                                    busy = false,
+                                    connected = false,
+                                    paired = paired || pairedUserId > 0L && pairedChatId > 0L,
+                                    setupComplete = setupComplete || paired,
+                                    videos = synchronized(lock) { BotRuntime.videos.values.toList().ifEmpty { videos } },
+                                    status = "네트워크 연결을 다시 확인하지 못했어요",
+                                    error = "재생 또는 저장을 유지하며 Telegram 복구를 요청하지 못했어요. 잠시 후 다시 새로고침해 주세요.",
+                                    needsReconnect = true,
+                                )
+                            }
+                        } else {
+                            publish {
+                                copy(
+                                    busy = false,
+                                    status = "Telegram 네트워크 복구를 요청했어요",
+                                    receiveDiagnostic = "재생 또는 저장을 유지하며 Telegram 네트워크 복구를 요청했어요.",
+                                    error = null,
+                                )
+                            }
+                        }
+                    }
+                }
+                authScheduler.schedule({
+                    if (finishReconnectAttempt(requestGeneration)) {
+                        publish {
+                            copy(
+                                busy = false,
+                                connected = false,
+                                status = "Telegram 네트워크 복구 응답이 늦어지고 있어요",
+                                error = "재생 또는 저장은 유지되고 있어요. 연결 상태를 확인한 뒤 다시 새로고침해 주세요.",
+                                needsReconnect = true,
+                            )
+                        }
+                    }
+                }, RECONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                return
+            }
+            if (state.first && state.third == null && !state.second) {
+                keepReconnectGuard = true
+                publish {
+                    copy(
+                        busy = false,
+                        connected = false,
+                        status = "재생 또는 저장이 끝나면 다시 연결해요",
+                        receiveDiagnostic = "재생 또는 저장은 계속돼요. 작업이 끝나면 저장된 봇 설정으로 자동 재연결할게요.",
+                        error = null,
+                        needsReconnect = true,
+                    )
+                }
+                return
+            }
+            if (state.first || state.second) {
+                publish {
+                    copy(
+                        busy = false,
+                        connected = false,
+                        paired = paired || pairedUserId > 0L && pairedChatId > 0L,
+                        setupComplete = setupComplete || paired,
+                        status = "연결을 다시 시도할 수 없어요",
+                        error = if (state.second) {
+                            "연결 초기화가 진행 중이라 다시 연결하지 않았어요. 받은 영상은 보존돼 있어요."
+                        } else {
+                            "봇 영상 재생이나 저장이 끝난 뒤 다시 새로고침해 주세요. 받은 영상은 보존돼 있어요."
+                        },
+                        needsReconnect = true,
+                    )
+                }
+                return
+            }
+            if (!closeClient(context, clearAccount = false)) return
+            connectInternal(context, value, persistCredentials = false)
+            keepReconnectGuard = synchronized(lock) { client != null && !ready && authWatchdog?.isDone == false }
+        } catch (error: Exception) {
+            val interrupted = error is InterruptedException
+            if (interrupted) Thread.currentThread().interrupt()
+            publish {
+                copy(
+                    busy = false,
+                    connected = false,
+                    paired = paired || pairedUserId > 0L && pairedChatId > 0L,
+                    setupComplete = setupComplete || paired,
+                    videos = synchronized(lock) { BotRuntime.videos.values.toList().ifEmpty { videos } },
+                    status = "다시 연결하지 못했어요",
+                    error = if (interrupted) {
+                        "Telegram 다시 연결을 기다리는 중 중단됐어요. 저장된 연결 정보와 받은 영상은 보존했어요."
+                    } else {
+                        "Telegram에 다시 연결하지 못했어요. 저장된 연결 정보와 받은 영상은 보존했어요."
+                    },
+                    needsReconnect = true,
+                )
+            }
+        } finally {
+            if (!keepReconnectGuard) finishReconnectAttempt()
+        }
+    }
+
+    private fun finishReconnectAttempt(expectedGeneration: Long? = null): Boolean = synchronized(lock) {
+        if (expectedGeneration != null && reconnectRequestGeneration != expectedGeneration) return@synchronized false
+        reconnectInFlight = false
+        reconnectRequestGeneration++
+        lock.notifyAll()
+        true
+    }
+
+    private fun resumePendingReconnectAfterLease() {
+        val context = synchronized(lock) {
+            if (playbackLeases.isNotEmpty() || saveLeases.isNotEmpty() || closingClearAccount) null
+            else pendingReconnectContext.also { pendingReconnectContext = null }
+        } ?: return
+        io.execute { reconnectForInboxRefresh(context) }
     }
 
     private fun isCurrentInboxRefresh(request: InboxRefreshRequest): Boolean = synchronized(lock) {
@@ -1233,38 +1437,54 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
             return
         }
         publish { copy(error = null) }
-        val requestedGeneration = clientGeneration
-        io.execute {
-            resolveVideoFile(app, video) { resolved ->
-                mainHandler.post {
-                    val live = synchronized(lock) { videos[resolved.messageId] }
-                    val liveSender = (synchronized(lock) { chatTypes[resolved.chatId] } as? TdApi.ChatTypePrivate)?.userId
-                    val blocked = isMessageBlocked(resolved.chatId, resolved.messageId)
-                    if (blocked) return@post
-                    if (ready && requestedGeneration == clientGeneration && pairedUserId > 0L &&
-                        resolved.chatId == pairedChatId && live?.fileId == resolved.fileId && !live.needsForward &&
-                        liveSender == pairedUserId && !blocked) {
-                        val intent = Intent(app, ConversionService::class.java)
-                            .putExtra(EXTRA_TDLIB_FILE_ID, resolved.fileId)
-                            .putExtra(EXTRA_TDLIB_NAME, resolved.displayName)
-                            .putExtra("format", format)
-                            .putExtra(AudioArtworkStore.EXTRA_ARTWORK_PATH, resolved.thumbnailPath)
-                            .putExtra(AudioArtworkStore.EXTRA_ARTWORK_BASE64, resolved.thumbnailBase64)
-                            .putExtra("tdlib_file_size", resolved.bytes)
-                        try {
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) app.startForegroundService(intent)
-                            else app.startService(intent)
-                        } catch (error: Exception) {
-                            AppDiagnostics.failure("bot-save-start", error)
-                            publish { copy(error = "오디오 저장을 시작하지 못했어요. 앱을 열고 다시 시도해 주세요.") }
-                        }
-                    } else {
-                        publish { copy(error = "봇 연결이 바뀌어 오디오 저장을 시작하지 못했어요. 다시 시도해 주세요.") }
-                    }
-                }
-            }
+        // Enqueue synchronously in click order. Remote restoration belongs to the selected worker.
+        val intent = Intent(app, ConversionService::class.java)
+            .putExtra(EXTRA_TDLIB_FILE_ID, video.fileId)
+            .putExtra(ConversionService.EXTRA_SOURCE_BOT_CHAT_ID, video.chatId)
+            .putExtra(ConversionService.EXTRA_SOURCE_BOT_MESSAGE_ID, video.messageId)
+            .putExtra(ConversionService.EXTRA_SOURCE_BOT_GENERATION, clientGeneration)
+            .putStringArrayListExtra(ConversionService.EXTRA_SOURCE_BOT_TAGS, ArrayList(video.tags))
+            .putExtra(EXTRA_TDLIB_NAME, video.displayName)
+            .putExtra("format", format)
+            .putExtra(AudioArtworkStore.EXTRA_ARTWORK_PATH, video.thumbnailPath)
+            .putExtra(AudioArtworkStore.EXTRA_ARTWORK_BASE64, video.thumbnailBase64)
+            .putExtra(EXTRA_TDLIB_SIZE, video.bytes)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) app.startForegroundService(intent)
+            else app.startService(intent)
+        } catch (error: Exception) {
+            AppDiagnostics.failure("bot-save-start", error)
+            publish { copy(error = "오디오 저장을 시작하지 못했어요. 앱을 열고 다시 시도해 주세요.") }
         }
     }
+
+    /** Called only after the scheduler grants this save a slot; never on button preparation. */
+    internal fun resolveAudioSaveFile(context: Context, request: Intent, cancelled: () -> Boolean): Int {
+        val chatId = request.getLongExtra(ConversionService.EXTRA_SOURCE_BOT_CHAT_ID, 0L)
+        val messageId = request.getLongExtra(ConversionService.EXTRA_SOURCE_BOT_MESSAGE_ID, 0L)
+        val generation = request.getLongExtra(ConversionService.EXTRA_SOURCE_BOT_GENERATION, clientGeneration)
+        require(generation == clientGeneration) { "봇 연결이 바뀌었어요. 다시 저장해 주세요." }
+        if (messageId <= 0L) return request.getIntExtra(EXTRA_TDLIB_FILE_ID, 0)
+        val video = synchronized(lock) { videos[messageId] }
+            ?: throw java.io.IOException("봇 목록에서 영상을 다시 선택해 주세요.")
+        require(video.chatId == chatId && !video.needsForward) { "저장할 영상 정보를 다시 확인해 주세요." }
+        val latch = java.util.concurrent.CountDownLatch(1)
+        val outcome = java.util.concurrent.atomic.AtomicReference<Result<BotVideo>?>(null)
+        resolveVideoFile(context, video, reportFailure = false, restoreThumbnail = false,
+            cancelled = cancelled, onFailure = { message ->
+                outcome.set(Result.failure(java.io.IOException(message))); latch.countDown()
+            }) { resolved -> outcome.set(Result.success(resolved)); latch.countDown() }
+        val until = System.nanoTime() + TimeUnit.SECONDS.toNanos(45)
+        while (!latch.await(100L, TimeUnit.MILLISECONDS)) {
+            if (cancelled()) throw InterruptedException()
+            if (System.nanoTime() >= until) throw java.net.SocketTimeoutException("Telegram file metadata timed out")
+        }
+        if (cancelled()) throw InterruptedException()
+        require(generation == clientGeneration) { "봇 연결이 바뀌었어요. 다시 저장해 주세요." }
+        return requireNotNull(outcome.get()).getOrThrow().fileId
+    }
+
+    internal fun audioSaveGeneration(): Long = clientGeneration
 
     /** ConversionService calls this on its worker thread after an explicit Save request. */
     override fun awaitCompletedFile(fileId: Int, cancelled: () -> Boolean, progress: (Long, Long) -> Unit): File {
@@ -1309,6 +1529,7 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
                     shouldDeleteReleasedFileLocked(fileId)
                 }
                 if (delete) deleteLocalFile(fileId)
+                resumePendingReconnectAfterLease()
             }
         }
     }
@@ -1320,6 +1541,7 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
             shouldDeleteReleasedFileLocked(fileId)
         }
         if (delete) deleteLocalFile(fileId)
+        resumePendingReconnectAfterLease()
     }
 
     internal fun ensureFileInfo(fileId: Int): TdApi.File = getCurrentFile(
@@ -1344,6 +1566,7 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
             shouldDeleteReleasedFileLocked(fileId)
         }
         if (delete) deleteLocalFile(fileId)
+        resumePendingReconnectAfterLease()
     }
 
     private fun deleteLocalFile(fileId: Int) {
@@ -1356,6 +1579,18 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
 
     internal fun releaseSavedFile(fileId: Int) {
         if (synchronized(lock) { shouldDeleteReleasedFileLocked(fileId) }) deleteLocalFile(fileId)
+    }
+
+    /** Close bridge readers before calling. Keep the save's cache pin until terminal removal. */
+    internal fun stopAudioSaveRequests(fileId: Int) {
+        val rangeLock = rangeLocks.computeIfAbsent(fileId) { Any() }
+        synchronized(rangeLock) {
+            val owner = client ?: return
+            val stopped = java.util.concurrent.CountDownLatch(1)
+            owner.send(TdApi.CancelDownloadFile(fileId, false)) { stopped.countDown() }
+            awaitBotWorkerStopped(stopped)
+            synchronized(lock) { activeRange.remove(fileId); lock.notifyAll() }
+        }
     }
 
     private fun requireOwnedTdlibFile(file: File) {
@@ -1390,6 +1625,7 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
             }
             val fullSaveOwnsFile = synchronized(lock) { fileId in saveLeases }
             if (shouldRequest && !fullSaveOwnsFile) {
+                if (cancelled()) throw java.io.InterruptedIOException("Telegram audio read cancelled")
                 sendOwned(tdClient, TdApi.DownloadFile(fileId, 32, range.first, range.second, false)) { result ->
                     if (result is TdApi.File) synchronized(lock) { files[fileId] = result; lock.notifyAll() }
                     else if (result is TdApi.Error) synchronized(lock) { activeRange.remove(fileId); lock.notifyAll() }
@@ -1428,24 +1664,32 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
         requested: BotVideo,
         reportFailure: Boolean = true,
         forceRefresh: Boolean = false,
+        restoreThumbnail: Boolean = true,
+        cancelled: () -> Boolean = { false },
+        onFailure: (String) -> Unit = {},
         onResolved: (BotVideo) -> Unit,
     ) {
+        fun fail(message: String) {
+            if (reportFailure && !cancelled()) publish { copy(error = message) }
+            onFailure(message)
+        }
+        if (cancelled()) { fail("Telegram save cancelled"); return }
         val owner = client
         if (owner == null || !ready) {
-            if (reportFailure) publish { copy(error = "봇 연결이 완료된 뒤 다시 들어 주세요.") }
+            fail("봇 연결이 완료된 뒤 다시 들어 주세요.")
             return
         }
         val current = synchronized(lock) { videos[requested.messageId] }
         if (current == null) {
-            if (reportFailure) publish { copy(error = "이 영상은 현재 봇 받은 편지함에 없어요. 목록을 새로고침해 주세요.") }
+            fail("이 영상은 현재 봇 받은 편지함에 없어요. 목록을 새로고침해 주세요.")
             return
         }
         if (isMessageBlocked(current.chatId, current.messageId)) {
-            if (reportFailure) publish { copy(error = "삭제 중인 영상은 열 수 없어요.") }
+            fail("삭제 중인 영상은 열 수 없어요.")
             return
         }
         if (current.chatId != pairedChatId || pairedUserId <= 0L) {
-            if (reportFailure) publish { copy(error = "연결한 Telegram 계정의 비공개 대화 영상만 열 수 있어요.") }
+            fail("연결한 Telegram 계정의 비공개 대화 영상만 열 수 있어요.")
             return
         }
         if (!forceRefresh && synchronized(lock) { current.messageId in restoredVideoMessages }) {
@@ -1453,13 +1697,15 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
             return
         }
         if (current.remoteFileId.isBlank()) {
-            if (reportFailure) publish { copy(error = "이전 연결의 파일 번호는 다시 사용할 수 없어요. 영상 자체를 봇에 다시 전달해 주세요.") }
+            fail("이전 연결의 파일 번호는 다시 사용할 수 없어요. 영상 자체를 봇에 다시 전달해 주세요.")
             return
         }
+        if (cancelled()) { fail("Telegram save cancelled"); return }
         sendOwned(owner, TdApi.GetRemoteFile(current.remoteFileId, null)) { result ->
             io.execute {
+                if (cancelled()) { fail("Telegram save cancelled"); return@execute }
                 if (client !== owner || !ready || current.chatId != pairedChatId || pairedUserId <= 0L) {
-                    if (reportFailure) publish { copy(error = "봇 연결이 변경되어 영상을 열지 못했어요. 다시 시도해 주세요.") }
+                    fail("봇 연결이 변경되어 영상을 열지 못했어요. 다시 시도해 주세요.")
                     return@execute
                 }
                 val latest = synchronized(lock) {
@@ -1468,7 +1714,7 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
                     }
                 }
                 if (latest == null || latest.chatId != pairedChatId || latest.remoteFileId != current.remoteFileId) {
-                    if (reportFailure) publish { copy(error = "영상 정보가 바뀌어 열지 못했어요. 목록을 새로고침해 주세요.") }
+                    fail("영상 정보가 바뀌어 열지 못했어요. 목록을 새로고침해 주세요.")
                     return@execute
                 }
                 val file = result as? TdApi.File
@@ -1479,11 +1725,12 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
                             it.chatId == current.chatId && !isMessageBlockedLocked(BotMessageKey(it.chatId, it.messageId))
                         }?.copy(needsForward = true)?.also { videos[current.messageId] = it }
                     }
-                    if (marked == null) return@execute
+                    if (marked == null) { fail("저장할 영상이 목록에서 제거됐어요."); return@execute }
                     publish {
                         copy(videos = synchronized(lock) { BotRuntime.videos.values.toList() },
                             error = if (reportFailure) "영상 파일을 다시 찾지 못했어요. 영상 자체를 봇에 다시 전달해 주세요." else error)
                     }
+                    onFailure("영상 파일을 다시 찾지 못했어요. 영상 자체를 봇에 다시 전달해 주세요.")
                     return@execute
                 }
                 val restored = synchronized(lock) {
@@ -1502,11 +1749,12 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
                     restoredVideoMessages += current.messageId
                     lock.notifyAll()
                     value
-                } ?: return@execute
+                } ?: run { fail("저장할 영상이 목록에서 제거됐어요."); return@execute }
                 BotPrivateStore(context).videos = synchronized(lock) { videos.values.toList() }
                 publish { copy(videos = synchronized(lock) { BotRuntime.videos.values.toList() }) }
                 logReceiveDiagnostic("file-restore success")
-                restoreThumbnailRemote(context, restored, owner)
+                if (restoreThumbnail && !cancelled()) restoreThumbnailRemote(context, restored, owner)
+                if (cancelled()) { fail("Telegram save cancelled"); return@execute }
                 onResolved(restored)
             }
         }
@@ -1636,6 +1884,11 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
     fun disconnect(context: Context) {
         val app = context.applicationContext
         appContext = app
+        synchronized(lock) {
+            pendingReconnectContext = null
+            reconnectInFlight = false
+            reconnectRequestGeneration++
+        }
         cancelInboxRefresh()
         runCatching { ExternalBotStreams.cancelAll(app) }
         runCatching { app.startService(Intent(app, StreamingAudioService::class.java).setAction(ACTION_STOP_TDLIB)) }
@@ -1707,6 +1960,9 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
             videos.clear(); restoredVideoMessages.clear(); tombstonedMessages.clear(); pendingDeletions.clear()
             protectedSharedFiles.clear(); deleteAfterLease.clear(); files.clear(); chatTypes.clear(); activeRange.clear()
             playbackLeases.clear(); saveLeases.clear(); thumbnailDownloads.clear(); transferErrors.clear()
+            pendingReconnectContext = null
+            reconnectInFlight = false
+            reconnectRequestGeneration++
             pendingNonce = null; pairedUserId = 0L; pairedChatId = 0L; credentials = null
             botUserId = 0L; botUsername = null; botDisplayName = null
         }
@@ -1741,4 +1997,5 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
     private const val PAIRING_NONCE_TTL_MS = 5L * 60L * 1000L
     private const val REFRESH_COOLDOWN_MS = 1_200L
     private const val REFRESH_TIMEOUT_MS = 45_000L
+    private const val RECONNECT_TIMEOUT_MS = 60_000L
 }

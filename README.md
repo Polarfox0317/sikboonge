@@ -10,6 +10,10 @@
 - **변환** 탭에서 기기의 영상을 선택하거나 다른 앱에서 공유해 오디오를 추출할 수 있습니다. 선택한 영상의 이름, 크기, 재생 시간은 확인할 수 있는 경우 표시됩니다.
 - 저장 형식은 **Original**, **WAV**, **MP3** 중 선택합니다. **설정**의 전역 저장 형식은 영상 변환과 봇 오디오 저장에 함께 적용되며, 결과는 앱 안의 보관함에 저장됩니다.
 - 저장한 오디오를 앱에서 재생하고 다른 앱과 공유하거나 다른 폴더로 내보낼 수 있습니다.
+- 봇 오디오 저장은 다운로드 대기열로 관리합니다. **순차** 모드는 저장을 누른 순서(FIFO)대로 한 작업씩, **병렬** 모드는 최대 3개 작업을 처리합니다. 일시 중지한 항목은 건너뛰며, 재개한 항목은 원래 대기 순서를 유지하고 실행 중인 작업을 앞지르지 않습니다.
+- 다운로드를 일시 중지·재개·취소할 수 있습니다. 이미 시작한 네이티브 오디오 추출을 중지한 경우, 재개할 때 준비된 입력에서 추출을 다시 시작합니다. 허용된 알림에서는 개별 작업의 진행과 저장 완료를 확인할 수 있습니다.
+- 봇과 보관함 항목에 태그를 붙이고 제목·태그로 검색할 수 있습니다. `#tag` 검색어는 태그만 검색하며, 일반 검색어는 제목과 태그를 함께 검색합니다.
+- **라이트**, **다크**, **시스템 설정** 테마를 선택할 수 있습니다. 처음 실행할 때 사용 안내를 제공하고, 설정의 오픈소스 라이선스·고지문은 앱에 포함된 자료를 오프라인으로 읽을 수 있습니다.
 
 탭 순서는 **봇**, **변환**, **보관함**이며, 앱은 봇 탭에서 열립니다. 봇 미디어 기능은 네트워크를 사용하고, 기기에 이미 있는 영상의 변환은 로컬에서 처리합니다.
 
@@ -42,21 +46,22 @@
 
 ## 소스에서 빌드
 
-공개 소스 버전은 앱 버전 `1.0.2`(version code `111`)이며, 릴리스 application ID는 `io.github.polarfox0317.sikboonge`입니다. 최소 Android 버전은 8.0(API 26), Android Gradle Plugin은 `9.2.1`, Gradle wrapper는 `9.4.1`, Android SDK compile level은 `37`입니다. 대상 ABI는 `arm64-v8a`와 `x86_64`입니다.
+1.1.0 릴리스 버전은 `1.1.0`(version code `125`)입니다. 기본 앱의 release application ID는 `io.github.polarfox0317.sikboonge`이며 기기에서 `Sikboonge`로 표시됩니다. 공개 소스의 debug 앱은 별도 APK와 application ID `io.github.polarfox0317.sikboonge.debug`를 사용하고 한국어 환경에서 `싴붕이 · 개발용`으로 표시됩니다. 공개 소스의 release와 debug 앱은 모두 일반 `MainActivity`를 엽니다. 로컬 검토용 화면과 더미 미디어는 공개 소스에서 제외합니다. 최소 Android 버전은 8.0(API 26), Android Gradle Plugin은 `9.2.1`, Gradle wrapper는 `9.4.1`, Android SDK compile level은 `37`입니다. 대상 ABI는 `arm64-v8a`와 `x86_64`입니다.
 
-JDK 17 이상과 API 37 SDK Platform 및 빌드 도구가 설치된 Android SDK가 필요합니다. PowerShell에서 저장소 루트로 이동한 뒤 체크인된 Gradle wrapper로 디버그 APK를 빌드합니다.
+JDK 17 이상과 API 37 SDK Platform 및 빌드 도구가 설치된 Android SDK가 필요합니다. PowerShell에서 저장소 루트로 이동해 release 앱과 debug 개발용 앱을 각각 빌드합니다.
 
 ```powershell
 .\gradlew.bat :app:assembleDebug
+.\gradlew.bat :app:assembleRelease
 ```
 
-생성되는 APK 경로는 `app/build/outputs/apk/debug/app-debug.apk`입니다. ADB에 연결된 Android 기기에 설치하려면 다음 명령을 사용합니다.
+release 앱은 `app/build/outputs/apk/release/app-release.apk`, debug 앱은 `app/build/outputs/apk/debug/app-debug.apk`에 생성됩니다. debug 앱은 에뮬레이터에 `adb install -r`로 설치할 수 있습니다. `-r`은 기존 앱 데이터를 보존합니다. 아래 명령은 설치 방법이며, 이번 릴리스의 기기 검증 결과를 뜻하지 않습니다.
 
 ```powershell
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb -s emulator-5554 install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-디버그 빌드의 application ID는 `io.github.polarfox0317.sikboonge.debug`이고 릴리스 빌드는 `io.github.polarfox0317.sikboonge`를 사용합니다. 로컬 소스 빌드에는 릴리스 서명이 선택 사항이며, 비밀 정보를 저장소에 넣지 않고 설정할 수 있습니다. 다음 네 환경 변수를 모두 설정하거나, 해당 Gradle 속성을 설정하세요.
+릴리스 서명은 저장소 밖의 로컬 설정으로 제공합니다. 다음 네 환경 변수를 모두 설정하거나, 해당 Gradle 속성을 설정하세요.
 
 - 환경 변수: `SIKBOONGE_RELEASE_STORE_FILE`, `SIKBOONGE_RELEASE_STORE_PASSWORD`, `SIKBOONGE_RELEASE_KEY_ALIAS`, `SIKBOONGE_RELEASE_KEY_PASSWORD`
 - Gradle 속성: `sikboongeReleaseStoreFile`, `sikboongeReleaseStorePassword`, `sikboongeReleaseKeyAlias`, `sikboongeReleaseKeyPassword`
@@ -65,7 +70,9 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 ## 다운로드
 
-Android APK와 대응 소스 아카이브는 [최신 GitHub 릴리스](https://github.com/Polarfox0317/sikboonge/releases/latest)에서 확인할 수 있습니다.
+Android APK는 [최신 GitHub 릴리스](https://github.com/Polarfox0317/sikboonge/releases/latest)에서 확인할 수 있습니다.
+
+FFmpegKit Audio 8.1.7의 네이티브 라이브러리 대응 소스·빌드 자료는 기존 v1.0.1의 [고정 공개 다운로드 링크](https://github.com/Polarfox0317/sikboonge/releases/download/v1.0.1/ffmpeg-kit-audio-8.1.7-corresponding-source.zip)에서 받으세요. SHA-256은 `3e1dae181ff2b926b2dd298517bd2609cfe5ad2829c52fc10629131e1ccbe4c5`, 크기는 `44,489,872`바이트입니다. 같은 바이너리를 사용하는 릴리스는 이 자료를 명확히 안내하며 동일 ZIP을 매번 중복 첨부하지 않습니다. 로컬 보관본은 `artifacts/third-party-source/ffmpeg-kit-audio-8.1.7-corresponding-source.zip`에 있습니다. 라이브러리 바이너리가 바뀌면 해당 바이너리에 맞는 새 소스 자료가 필요합니다. [소스·재링크 안내](docs/THIRD_PARTY_SOURCE.md)를 참고하세요.
 
 ## 검증 상태
 
@@ -73,14 +80,14 @@ Android APK와 대응 소스 아카이브는 [최신 GitHub 릴리스](https://g
 
 버전 `1.0.1`(version code `110`)은 공개용 소스로 릴리스 빌드를 완료했습니다. 릴리스 APK는 프로젝트 릴리스 인증서를 사용해 `apksigner`로 확인했습니다. 코드 `110`의 기기 설치, 시각적 검토, Telegram 종단 간 동작은 검증하지 않았습니다.
 
-현재 소스는 버전 `1.0.2`(version code `111`)입니다. 해당 버전의 빌드와 기기 검증 결과는 아직 없습니다.
+1.1.0의 최종 빌드·패키지 검증은 해당 릴리스의 검증 기록을 따릅니다. 위의 이전 버전 결과를 1.1.0의 결과로 재사용하지 않으며, 이 README는 새로운 수동 UI 검토나 Telegram 종단 간 테스트의 성공을 주장하지 않습니다.
 
 ## 기존 봇 연결 정보
 
-봇 연결 정보는 기기의 Android Keystore로 암호화됩니다. 버전 `1.0.1`과 현재 소스 `1.0.2`는 현재 키 alias로 암호화된 정보를 읽으며, 이전 alias로 암호화된 정보를 자동으로 옮기지 않습니다. 이전 빌드의 봇 연결 정보는 업데이트 후 읽히지 않을 수 있으며, 그런 경우 봇을 다시 설정해야 할 수 있습니다. 이 버전은 앱 설정이나 저장된 키를 자동으로 삭제하지 않습니다.
+봇 연결 정보는 기기의 Android Keystore로 암호화됩니다. 버전 `1.0.1` 이후의 현재 소스는 현재 키 alias로 암호화된 정보를 읽으며, 이전 alias로 암호화된 정보를 자동으로 옮기지 않습니다. 이전 빌드의 봇 연결 정보는 업데이트 후 읽히지 않을 수 있으며, 그런 경우 봇을 다시 설정해야 할 수 있습니다. 이 버전은 앱 설정이나 저장된 키를 자동으로 삭제하지 않습니다.
 
 ## Third-party software and licensing
 
 See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md), the [`third-party source notes`](docs/THIRD_PARTY_SOURCE.md), and the `licenses/` directory for dependency provenance and included notices. The app uses FFmpegKit Audio, FFmpeg, LAME, TDLib Android Core, AndroidX, Compose, Media3, and Kotlin components.
 
-The app-authored code, documentation, and project-owned branding assets of sikboonge are licensed under the [MIT License](LICENSE), Copyright (c) 2026 Polarfox0317. Third-party components retain their own licenses: Material icons and Gradle wrapper files are Apache-2.0; FFmpegKit Audio and its LGPL components, TDLib, and other dependencies remain subject to their respective terms. MIT does not replace those terms or the obligations when distributing a binary. See the the included license and source notices for the evidence and its limits. The resolved FFmpegKit AAR matches the upstream release asset byte for byte; a corresponding-source archive for its pinned FFmpegKit and audio component sources is prepared under `artifacts/third-party-source/`. A source rebuild and modified-library replacement/reinstallation have not been verified; see [third-party source notes](docs/THIRD_PARTY_SOURCE.md).
+The app-authored code, documentation, and project-owned branding assets of sikboonge are licensed under the [MIT License](LICENSE), Copyright (c) 2026 Polarfox0317. Third-party components retain their own licenses: Material icons and Gradle wrapper files are Apache-2.0; FFmpegKit Audio and its LGPL components, TDLib, and other dependencies remain subject to their respective terms. MIT does not replace those terms or the obligations when distributing a binary. See the the included license and source notices for the evidence and its limits. The resolved FFmpegKit AAR matches the upstream release asset byte for byte; the corresponding-source bundle for its pinned FFmpegKit and audio components is available through the stable v1.0.1 download linked above and retained under `artifacts/third-party-source/`. A source rebuild and modified-library replacement/reinstallation have not been verified; see [third-party source notes](docs/THIRD_PARTY_SOURCE.md).

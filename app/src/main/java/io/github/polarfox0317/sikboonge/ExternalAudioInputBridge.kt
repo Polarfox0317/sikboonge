@@ -24,6 +24,9 @@ internal class ExternalAudioInputBridge private constructor(
     private val firstFailure = java.util.concurrent.atomic.AtomicReference<IncompleteMediaInputException?>(null)
     private val sockets = ConcurrentHashMap.newKeySet<Socket>()
     private val slots = Semaphore(4)
+    private val workerLock = Any()
+    private val workers = mutableSetOf<Thread>()
+    private val closeFinished = java.util.concurrent.CountDownLatch(1)
 
     val isClosed: Boolean get() = closed.get()
     val failureContext: UserFacingErrors.Context get() = source.context
@@ -51,8 +54,19 @@ internal class ExternalAudioInputBridge private constructor(
             while (!closed.get()) {
                 val socket = try { server.accept() } catch (_: Exception) { break }
                 if (!slots.tryAcquire()) { runCatching { socket.close() }; continue }
-                sockets.add(socket)
-                Thread({ serve(socket) }, "external-audio-input").apply { isDaemon = true; start() }
+                synchronized(workerLock) {
+                    if (closed.get()) { socket.close(); slots.release() }
+                    else {
+                        sockets.add(socket)
+                        val worker = Thread({
+                            try { serve(socket) } finally {
+                                synchronized(workerLock) { workers.remove(Thread.currentThread()) }
+                            }
+                        }, "external-audio-input").apply { isDaemon = true }
+                        workers.add(worker)
+                        worker.start()
+                    }
+                }
             }
         }, "external-audio-loopback").apply { isDaemon = true; start() }
     }
@@ -164,11 +178,24 @@ internal class ExternalAudioInputBridge private constructor(
     }
 
     override fun close() {
-        if (!closed.compareAndSet(false, true)) return
-        runCatching { server.close() }
-        sockets.forEach { runCatching { it.close() } }
-        sockets.clear()
-        runCatching { source.close() }
+        if (!closed.compareAndSet(false, true)) {
+            awaitBotWorkerStopped(closeFinished)
+            return
+        }
+        try {
+            runCatching { server.close() }
+            sockets.forEach { runCatching { it.close() } }
+            sockets.clear()
+            runCatching { source.close() }
+            val readers = synchronized(workerLock) { workers.toList() }
+            var interrupted = false
+            readers.filterNot { it === Thread.currentThread() }.forEach { reader ->
+                while (reader.isAlive) {
+                    try { reader.join() } catch (_: InterruptedException) { interrupted = true }
+                }
+            }
+            if (interrupted) Thread.currentThread().interrupt()
+        } finally { closeFinished.countDown() }
     }
 
     internal data class ByteRange(val start: Long, val endInclusive: Long)
@@ -190,7 +217,7 @@ internal class ExternalAudioInputBridge private constructor(
         private val lock = Any()
         private var fileSize: Long? = null
         private var leaseStarted = false
-        private var sourceClosed = false
+        @Volatile private var sourceClosed = false
 
         private fun ensureLease(): Long = synchronized(lock) {
             if (sourceClosed) throw IOException("Telegram audio input was cancelled")

@@ -12,6 +12,7 @@ import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.PlainTooltip
@@ -27,6 +28,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
@@ -50,11 +52,15 @@ internal fun DownloadProgressCard(
     onCancel: (Long) -> Unit,
     modifier: Modifier = Modifier,
     useGridTile: Boolean = false,
+    onPause: (Long) -> Unit = {},
+    onResume: (Long) -> Unit = {},
 ) {
     var cancelling by remember(download.id) { mutableStateOf(false) }
     val queued = download.stage == "대기 중"
     val status = when {
-        cancelling -> "중지하는 중"
+        cancelling -> "취소하는 중"
+        download.pausing -> "일시 중지하는 중"
+        download.paused -> "일시 중지됨"
         queued -> "대기 중"
         else -> "다운로드 중"
     }
@@ -62,8 +68,8 @@ internal fun DownloadProgressCard(
     val formatted = DownloadProgress.format(
         DownloadMetrics(
             progress = progress,
-            bytesPerSecond = download.bytesPerSecond,
-            remainingSeconds = download.remainingSeconds,
+            bytesPerSecond = download.bytesPerSecond.takeUnless { download.paused },
+            remainingSeconds = download.remainingSeconds.takeUnless { download.paused },
         ),
     )
     val animatedProgress by animateFloatAsState(
@@ -76,13 +82,16 @@ internal fun DownloadProgressCard(
     } else {
         ProgressBarRangeInfo(progress, 0f..1f)
     }
-    val accessibleSummary = listOfNotNull(download.name, status, download.stage, formatted.notification)
+    val stageDescription = download.stage.takeUnless {
+        queued || download.paused || download.pausing || cancelling
+    }
+    val accessibleSummary = listOfNotNull(download.name, status, stageDescription, formatted.notification)
         .joinToString(" · ")
 
     val cardModifier = modifier.semantics {
             contentDescription = accessibleSummary
             stateDescription = status
-            if (!queued) {
+            if (!queued && (!download.paused || progress != null)) {
                 progressBarRangeInfo = accessibleProgress
             }
         }
@@ -104,16 +113,15 @@ internal fun DownloadProgressCard(
                         formatted = formatted,
                         showProgress = !queued,
                         animatedProgress = animatedProgress,
+                        paused = download.paused,
                     )
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                        DownloadCancelButton(
-                            enabled = !cancelling,
-                            onClick = {
-                                cancelling = true
-                                onCancel(download.id)
-                            },
-                        )
-                    }
+                    DownloadActionsRow(
+                        download = download,
+                        cancelling = cancelling,
+                        onPause = onPause,
+                        onResume = onResume,
+                        onCancel = { cancelling = true; onCancel(download.id) },
+                    )
                 }
             },
             modifier = cardModifier,
@@ -128,22 +136,23 @@ internal fun DownloadProgressCard(
             onClick = {},
             onLongClick = {},
             thumbnail = thumbnail,
-            trailing = {
-                DownloadCancelButton(
-                    enabled = !cancelling,
-                    onClick = {
-                        cancelling = true
-                        onCancel(download.id)
-                    },
-                )
-            },
             actions = {
-                DownloadProgressDetails(
-                    progress = progress,
-                    formatted = formatted,
-                    showProgress = !queued,
-                    animatedProgress = animatedProgress,
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    DownloadProgressDetails(
+                        progress = progress,
+                        formatted = formatted,
+                        showProgress = !queued,
+                        animatedProgress = animatedProgress,
+                        paused = download.paused,
+                    )
+                    DownloadActionsRow(
+                        download = download,
+                        cancelling = cancelling,
+                        onPause = onPause,
+                        onResume = onResume,
+                        onCancel = { cancelling = true; onCancel(download.id) },
+                    )
+                }
             },
             modifier = cardModifier,
             clickable = false,
@@ -158,13 +167,21 @@ private fun DownloadProgressDetails(
     formatted: DownloadProgressText,
     showProgress: Boolean,
     animatedProgress: Float,
+    paused: Boolean,
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         if (showProgress) {
-            if (progress == null) {
+            if (paused) {
+                progress?.let { value ->
+                    LinearProgressIndicator(
+                        progress = { value },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            } else if (progress == null) {
                 LinearWavyProgressIndicator(modifier = Modifier.fillMaxWidth())
             } else {
                 LinearWavyProgressIndicator(
@@ -173,7 +190,13 @@ private fun DownloadProgressDetails(
                 )
             }
         }
-        if (formatted.percent == null && formatted.details == null) {
+        if (paused) {
+            Text(
+                "일시 중지됨",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else if (formatted.percent == null && formatted.details == null) {
             Text(
                 "준비 중",
                 style = MaterialTheme.typography.labelLarge.copy(fontFeatureSettings = "tnum"),
@@ -207,27 +230,68 @@ private fun DownloadProgressDetails(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun DownloadCancelButton(
+private fun DownloadActionsRow(
+    download: LibraryDownload,
+    cancelling: Boolean,
+    onPause: (Long) -> Unit,
+    onResume: (Long) -> Unit,
+    onCancel: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
+    ) {
+        if (download.canPause) {
+            if (download.paused) {
+                DownloadActionButton(
+                    label = "다운로드 재개",
+                    icon = R.drawable.ic_media_play,
+                    enabled = !download.pausing && !cancelling,
+                    onClick = { onResume(download.id) },
+                )
+            } else {
+                DownloadActionButton(
+                    label = "다운로드 일시 중지",
+                    icon = R.drawable.ic_media_pause,
+                    enabled = !download.pausing && !cancelling,
+                    onClick = { onPause(download.id) },
+                )
+            }
+        }
+        DownloadActionButton(
+            label = "다운로드 취소",
+            icon = R.drawable.ic_close,
+            enabled = !cancelling,
+            onClick = onCancel,
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun DownloadActionButton(
+    label: String,
+    icon: Int,
     enabled: Boolean,
     onClick: () -> Unit,
 ) {
     val tooltipState = rememberTooltipState()
     TooltipBox(
         positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
-        tooltip = { PlainTooltip { Text("다운로드 중지") } },
+        tooltip = { PlainTooltip { Text(label) } },
         state = tooltipState,
     ) {
         IconButton(
             onClick = onClick,
             enabled = enabled,
+            shapes = IconButtonDefaults.shapes(),
             modifier = Modifier
                 .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
-                .semantics { contentDescription = "다운로드 중지" },
+                .semantics { contentDescription = label },
         ) {
             Icon(
-                painter = painterResource(R.drawable.ic_close),
+                painter = painterResource(icon),
                 contentDescription = null,
                 modifier = Modifier.size(IconButtonDefaults.smallIconSize),
             )

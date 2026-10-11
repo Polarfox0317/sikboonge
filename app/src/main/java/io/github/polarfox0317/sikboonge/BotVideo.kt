@@ -16,6 +16,7 @@ data class BotVideo(
     val thumbnailBase64: String = "",
     val thumbnailPath: String? = null,
     val customTitle: String? = null,
+    val tags: List<String> = emptyList(),
 ) {
     val displayName: String
         get() = customTitle?.trim()?.takeIf(String::isNotBlank)
@@ -42,7 +43,7 @@ internal fun BotVideo.mergeThumbnailMetadata(previous: BotVideo?): BotVideo {
         remoteFileId.isNotBlank() && previous.remoteFileId.isNotBlank() -> remoteFileId == previous.remoteFileId
         else -> fileId == previous.fileId
     }
-    if (!sameMedia) return copy(customTitle = retainedTitle)
+    if (!sameMedia) return copy(customTitle = retainedTitle, tags = previous.tags)
 
     val thumbnailRemoteId = thumbnailRemoteFileId.ifBlank { previous.thumbnailRemoteFileId }
     val sameThumbnail = when {
@@ -54,6 +55,7 @@ internal fun BotVideo.mergeThumbnailMetadata(previous: BotVideo?): BotVideo {
     }
     return copy(
         customTitle = retainedTitle,
+        tags = previous.tags,
         thumbnailRemoteFileId = thumbnailRemoteId,
         thumbnailFileId = thumbnailFileId.takeIf { it > 0 } ?: previous.thumbnailFileId.takeIf { sameThumbnail } ?: 0,
         thumbnailBase64 = thumbnailBase64.takeIf(String::isNotBlank)

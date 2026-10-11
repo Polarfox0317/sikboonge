@@ -132,6 +132,22 @@ internal class DownloadProgressTracker(
         remainingSeconds = remainingSeconds?.takeIf { now - progressSampleAt <= METRIC_STALE_NANOS },
     )
 
+    /** Extraction restarts on resume; keep verified range coverage, reset processing/speed/ETA. */
+    @Synchronized
+    fun restartProcessing(platformDownloadedSize: Long? = null): DownloadMetrics {
+        conversionProgress = null
+        progressSample = null
+        progressPerSecond = null
+        remainingSeconds = null
+        speedBytesPerSecond = null
+        val now = nowNanos()
+        progressSampleAt = now
+        platformSampleAt = now
+        speedMeasuredAt = now
+        lastPlatformDownloadedSize = platformDownloadedSize?.takeIf { it >= 0L }
+        return snapshot(now)
+    }
+
     private fun insertUniqueRange(start: Long, endExclusive: Long): Long {
         var mergedStart = start
         var mergedEnd = endExclusive

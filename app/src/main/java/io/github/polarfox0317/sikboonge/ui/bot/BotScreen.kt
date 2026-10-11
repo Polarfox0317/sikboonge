@@ -19,8 +19,6 @@ import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -30,7 +28,6 @@ import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.LoadingIndicatorDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -54,10 +51,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
-import io.github.polarfox0317.sikboonge.BotCredentials
 import io.github.polarfox0317.sikboonge.BotUiState
 import io.github.polarfox0317.sikboonge.BotVideoThumbnail
 import io.github.polarfox0317.sikboonge.BotVideoTitlePolicy
@@ -74,10 +68,12 @@ import io.github.polarfox0317.sikboonge.ui.components.ListControls
 import io.github.polarfox0317.sikboonge.ui.components.MediaTile
 import io.github.polarfox0317.sikboonge.ui.components.MediaMenuItem
 import io.github.polarfox0317.sikboonge.ui.components.RenameDialog
+import io.github.polarfox0317.sikboonge.ui.components.TagEditorDialog
 import io.github.polarfox0317.sikboonge.ui.components.SectionCard
 import io.github.polarfox0317.sikboonge.ui.components.ScrollJumpBubbles
 import io.github.polarfox0317.sikboonge.ui.state.AppActions
 import io.github.polarfox0317.sikboonge.ui.state.AppUiState
+import io.github.polarfox0317.sikboonge.ui.state.hasActiveSave
 import io.github.polarfox0317.sikboonge.ui.state.Destination
 import io.github.polarfox0317.sikboonge.ui.state.ListLayout
 import io.github.polarfox0317.sikboonge.ui.state.ListQuery
@@ -99,6 +95,7 @@ internal fun BotScreen(
     // The saveable grid state remains alive while another Bot body is visible.
     val gridState = rememberLazyGridState()
     var editingMessageId by rememberSaveable { mutableStateOf<Long?>(null) }
+    var editingTagMessageId by rememberSaveable { mutableStateOf<Long?>(null) }
     LaunchedEffect(reselectionToken) {
         if (reselectionToken != 0) gridState.scrollToItem(0)
     }
@@ -125,7 +122,8 @@ internal fun BotScreen(
                     label = "봇 연결 상태를 확인하고 있어요.",
                 )
                 BotBody.Setup -> BotSetup(state, actions, contentPadding)
-                BotBody.Inbox -> BotInbox(state, actions, gridState, tier, contentPadding, onRename = { editingMessageId = it }, onScrollJump = onScrollJump)
+                BotBody.Inbox -> BotInbox(state, actions, gridState, tier, contentPadding,
+                    onRename = { editingMessageId = it }, onEditTags = { editingTagMessageId = it }, onScrollJump = onScrollJump)
             }
         }
     }
@@ -137,6 +135,15 @@ internal fun BotScreen(
             onDismiss = { editingMessageId = null },
         )
     }
+    state.bot.videos.firstOrNull { it.messageId == editingTagMessageId }?.let { video ->
+        TagEditorDialog(
+            initial = video.tags,
+            suggestions = state.allTagVocabulary,
+            onConfirm = { actions.onSetBotVideoTags(video, it); editingTagMessageId = null },
+            onDismiss = { editingTagMessageId = null },
+            testTagPrefix = "bot",
+        )
+    }
     state.pendingBotDelete?.takeIf { it.isNotEmpty() }?.let { targets ->
         ConfirmDeleteDialog(targets.size, { actions.onConfirmBotDelete(targets) }, { actions.onRequestBotDelete(emptySet()) }, bot = true)
     }
@@ -146,16 +153,10 @@ internal fun BotScreen(
 @Composable
 private fun BotSetup(state: AppUiState, actions: AppActions, contentPadding: PaddingValues) {
     val bot = state.bot
-    val fieldsEnabled = !bot.connected && !bot.busy
-    val parsedApiId = state.botApiIdText.toIntOrNull()
     val tokenFocusRequester = remember { FocusRequester() }
     val apiIdFocusRequester = remember { FocusRequester() }
     val apiHashFocusRequester = remember { FocusRequester() }
-    val canConnect = !bot.busy && parsedApiId != null && parsedApiId > 0 &&
-        state.botApiHash.isNotBlank() && state.botToken.isNotBlank()
-    val connectBot: () -> Unit = {
-        parsedApiId?.let { actions.onConnectBot(BotCredentials(it, state.botApiHash.trim(), state.botToken.trim())) }
-    }
+    val canConnect = botCanConnect(state)
     FormColumn(Modifier.fillMaxSize().padding(contentPadding).consumeWindowInsets(contentPadding).testTag("botContent")) {
         Text("내 봇으로 받은 영상 듣기", style = MaterialTheme.typography.titleMedium)
         Text("내가 만든 Telegram 봇의 비공개 대화로 전달한 영상만 표시돼요. 앱을 열어 연결해 둔 동안 새 영상을 받아요. 큰 영상도 바로 들을 수 있어요. 앱을 종료한 동안에는 수신하지 않으니, 다시 받을 때 앱을 열고 연결해 주세요. 24시간 서버 수신은 제공하지 않아요. Telegram에서 전달을 막은 보호 콘텐츠는 받을 수 없어요.",
@@ -180,41 +181,24 @@ private fun BotSetup(state: AppUiState, actions: AppActions, contentPadding: Pad
             title = { Text("처음 한 번 설정") },
             body = {
                 Text("3. 아래 칸에 세 값을 입력하고 연결하세요. token과 api_hash는 비밀번호처럼 취급하세요. 이 기기의 암호화 저장소에 보관돼요.")
-                OutlinedTextField(
-                    value = state.botToken,
-                    onValueChange = { actions.onBotTokenChanged(it.trim()) },
-                    label = { Text("봇 token") },
-                    visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-                    keyboardActions = KeyboardActions(onNext = { apiIdFocusRequester.requestFocus() }),
-                    singleLine = true,
-                    enabled = fieldsEnabled,
+                BotTokenField(
+                    state, actions, ImeAction.Next,
+                    onImeAction = { apiIdFocusRequester.requestFocus() },
                     modifier = Modifier.fillMaxWidth().focusRequester(tokenFocusRequester).testTag("botToken"),
                 )
-                OutlinedTextField(
-                    value = state.botApiIdText,
-                    onValueChange = { actions.onBotApiIdChanged(it.filter(Char::isDigit).take(10)) },
-                    label = { Text("api_id") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next),
-                    keyboardActions = KeyboardActions(onNext = { apiHashFocusRequester.requestFocus() }),
-                    singleLine = true,
-                    enabled = fieldsEnabled,
+                BotApiIdField(
+                    state, actions, ImeAction.Next,
+                    onImeAction = { apiHashFocusRequester.requestFocus() },
                     modifier = Modifier.fillMaxWidth().focusRequester(apiIdFocusRequester).testTag("botApiId"),
                 )
-                OutlinedTextField(
-                    value = state.botApiHash,
-                    onValueChange = actions::onBotApiHashChanged,
-                    label = { Text("api_hash") },
-                    visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                    keyboardActions = KeyboardActions(onDone = { if (canConnect) connectBot() }),
-                    singleLine = true,
-                    enabled = fieldsEnabled,
+                BotApiHashField(
+                    state, actions, ImeAction.Done,
+                    onImeAction = { if (canConnect) connectBot(state, actions) },
                     modifier = Modifier.fillMaxWidth().focusRequester(apiHashFocusRequester).testTag("botApiHash"),
                 )
                 BotStatus(bot)
                 Button(
-                    onClick = connectBot,
+                    onClick = { connectBot(state, actions) },
                     enabled = canConnect,
                     shapes = ButtonDefaults.shapesFor(ButtonDefaults.MediumContainerHeight),
                     contentPadding = ButtonDefaults.contentPaddingFor(ButtonDefaults.MediumContainerHeight),
@@ -239,13 +223,7 @@ private fun BotPairingCard(bot: BotUiState, actions: AppActions, modifier: Modif
         title = { Text("내 Telegram 계정 연결") },
         body = {
             Text("내 Telegram 계정에 연결하려면 봇과의 비공개 대화를 시작해 주세요.")
-            Button(
-                onClick = actions::onPairBot,
-                enabled = !bot.busy && !bot.username.isNullOrBlank(),
-                shapes = ButtonDefaults.shapesFor(ButtonDefaults.MediumContainerHeight),
-                contentPadding = ButtonDefaults.contentPaddingFor(ButtonDefaults.MediumContainerHeight),
-                modifier = Modifier.fillMaxWidth().heightIn(min = ButtonDefaults.MediumContainerHeight).testTag("botPair"),
-            ) { Text("내 Telegram 계정 연결", style = ButtonDefaults.textStyleFor(ButtonDefaults.MediumContainerHeight)) }
+            BotPairButton(bot, actions, Modifier.fillMaxWidth().testTag("botPair"))
         },
         modifier = modifier,
     )
@@ -260,10 +238,11 @@ private fun BotInbox(
     tier: WindowTier,
     contentPadding: PaddingValues,
     onRename: (Long) -> Unit,
+    onEditTags: (Long) -> Unit,
     onScrollJump: (toTop: Boolean) -> Unit,
 ) {
     val bot = state.bot
-    val refreshEnabled = bot.connected && bot.paired && !bot.busy && !bot.refreshing && !state.selectionMode
+    val refreshEnabled = !bot.refreshing && !state.selectionMode
     val showReconnectButton = bot.needsReconnect && bot.paired && !state.botSetupRequested && !state.selectionMode
     val pullState = rememberPullToRefreshState()
     val horizontalPadding = AppDimens.contentHorizontalPadding(tier)
@@ -275,7 +254,6 @@ private fun BotInbox(
         bottom = contentPadding.calculateBottomPadding() + AppDimens.itemSpacing +
             if (showReconnectButton) ButtonDefaults.MediumContainerHeight + AppDimens.itemSpacing else 0.dp,
     )
-    val conversionRunning = state.conversion.running || state.preparingBotSaveMessageId != null
     val fontScale = LocalDensity.current.fontScale
     val minimumColumnWidth = when (state.botLayout) {
         ListLayout.List -> AppDimens.minimumGridColumnWidth(fontScale)
@@ -322,6 +300,7 @@ private fun BotInbox(
                     placeholder = "\uBD07 \uC601\uC0C1 \uAC80\uC0C9",
                     tagPrefix = "bot",
                     modifier = Modifier.fillMaxWidth(),
+                    tagVocabulary = state.botTagVocabulary,
                 )
             }
             if (state.selectionMode && bot.videos.isNotEmpty()) {
@@ -361,7 +340,9 @@ private fun BotInbox(
                 }
             }
             items(state.visibleBotVideos, key = { it.messageId }) { video ->
-                val available = bot.connected && !bot.busy && !video.needsForward
+            val available = bot.connected && !bot.busy && !video.needsForward
+            val itemSaving = video.messageId in state.preparingBotSaveMessageIds ||
+                video.fileId in state.preparingBotSaveFileIds || video.hasActiveSave(state.downloads)
                 Column(verticalArrangement = Arrangement.spacedBy(AppDimens.itemSpacing)) {
                     val itemModifier = Modifier.fillMaxWidth()
                         .testTag(if (state.selectionMode) "botSelect_${video.messageId}" else "botVideo_${video.messageId}")
@@ -369,6 +350,7 @@ private fun BotInbox(
                     val menuItems = listOf(
                         MediaMenuItem("\uC7AC\uC0DD\uBAA9\uB85D\uC5D0 \uCD94\uAC00", R.drawable.ic_playlist_add, enabled = available, onClick = { actions.onAddBotVideoToQueue(video) }, testTag = "botAddToQueue"),
                         MediaMenuItem("\uC601\uC0C1 \uC81C\uBAA9 \uC218\uC815", R.drawable.ic_bot_edit, onClick = { onRename(video.messageId) }, testTag = "botRenameIcon_${video.messageId}"),
+                        MediaMenuItem("\uD0DC\uADF8 \uD3B8\uC9D1", R.drawable.ic_tag, onClick = { onEditTags(video.messageId) }, testTag = "botTagEdit_${video.messageId}"),
                         MediaMenuItem("\uB2E4\uB978 \uC571\uC73C\uB85C \uC7AC\uC0DD", R.drawable.ic_bot_open_in_new, enabled = available, onClick = { actions.onExternalPlayBotVideo(video) }, testTag = "botExternalPlay"),
                         MediaMenuItem("\uC601\uC0C1 \uC0AD\uC81C", R.drawable.ic_bot_delete, destructive = true, onClick = { actions.onRequestBotDelete(setOf(video.messageId)) }, testTag = "botDelete_${video.messageId}"),
                     )
@@ -377,12 +359,12 @@ private fun BotInbox(
                             compact = compact,
                             onListen = { actions.onPlayBotVideo(video) }, listenEnabled = available,
                             onSave = { actions.onSaveBotVideo(video, state.saveFormat) },
-                            saveEnabled = available && !conversionRunning, saveBusy = conversionRunning,
+                            saveEnabled = available && !itemSaving, saveBusy = itemSaving,
                             modifier = Modifier.fillMaxWidth().testTag("botCardActions"),
                             listenModifier = Modifier.testTag("botListen").semantics { contentDescription = "\uB4E3\uAE30" },
                             saveModifier = Modifier.testTag("botSaveToLibrary").semantics {
                                 contentDescription = "\uBCF4\uAD00\uD568\uC5D0 \uC800\uC7A5 (" + state.saveFormat.title + ")"
-                                if (conversionRunning) stateDescription = "\uC800\uC7A5 \uC911"
+                                if (itemSaving) stateDescription = "\uC800\uC7A5 \uC911"
                             },
                             moreModifier = Modifier.testTag("botVideoMenu_${video.messageId}"),
                             menuModifier = Modifier.testTag("botVideoMenuContent_${video.messageId}"),
@@ -401,6 +383,7 @@ private fun BotInbox(
                             onClick = { if (state.selectionMode) actions.onToggleBotSelection(video.messageId) },
                             onLongClick = { if (!state.selectionMode) actions.onBeginSelection(); actions.onToggleBotSelection(video.messageId) },
                             thumbnail = itemThumbnail, actions = { itemActions(true) }, modifier = itemModifier,
+                            tags = video.tags,
                         )
                     } else {
                         MediaCard(
@@ -411,6 +394,7 @@ private fun BotInbox(
                             onClick = { if (state.selectionMode) actions.onToggleBotSelection(video.messageId) },
                             onLongClick = { if (!state.selectionMode) actions.onBeginSelection(); actions.onToggleBotSelection(video.messageId) },
                             thumbnail = itemThumbnail, actions = { itemActions(false) }, modifier = itemModifier,
+                            tags = video.tags,
                         )
                     }
                     }
@@ -445,13 +429,6 @@ private fun BotInbox(
                 ),
         )
     }
-}
-
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
-@Composable
-private fun BotStatus(bot: BotUiState) {
-    Text("${bot.status}${bot.username?.let { " · @$it" }.orEmpty()}", style = MaterialTheme.typography.bodyMedium)
-    BotInlineStatus(bot)
 }
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)

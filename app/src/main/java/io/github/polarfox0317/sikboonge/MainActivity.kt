@@ -17,6 +17,7 @@ import io.github.polarfox0317.sikboonge.ui.shell.AppRoot
 import io.github.polarfox0317.sikboonge.ui.state.AppController
 import io.github.polarfox0317.sikboonge.ui.state.AppControllerFactory
 import io.github.polarfox0317.sikboonge.ui.state.Destination
+import io.github.polarfox0317.sikboonge.ui.welcome.WelcomePreferences
 
 class MainActivity : ComponentActivity() {
     private lateinit var controller: AppController
@@ -28,6 +29,12 @@ class MainActivity : ComponentActivity() {
     private var consumedOpenUpdateEventToken = 0
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        WelcomePreferences.evaluateOnLaunch(this)
+        val forceWelcome = if (savedInstanceState == null) {
+            BuildConfig.DEBUG && intent.getBooleanExtra("debug_show_welcome", false)
+        } else {
+            false
+        }
         enableEdgeToEdge()
         if (Build.VERSION.SDK_INT >= 29) window.isNavigationBarContrastEnforced = false
         AppStore.load(this)
@@ -46,7 +53,7 @@ class MainActivity : ComponentActivity() {
             accept(intent)
         }
         setContent {
-            AppRoot(controller)
+            AppRoot(controller, forceWelcome = forceWelcome)
             LaunchedEffect(incomingEventToken) {
                 controller.actions.onSharedIntent(incomingUri, incomingEventToken)
             }

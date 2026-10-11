@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ButtonGroup
 import androidx.compose.material3.ButtonGroupDefaults
@@ -16,6 +18,8 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.DropdownMenuPopup
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MenuDefaults
@@ -44,7 +48,9 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import io.github.polarfox0317.sikboonge.R
+import io.github.polarfox0317.sikboonge.TagPolicy
 import io.github.polarfox0317.sikboonge.ui.state.DateRange
 import io.github.polarfox0317.sikboonge.ui.state.ListLayout
 import io.github.polarfox0317.sikboonge.ui.state.ListQuery
@@ -61,6 +67,7 @@ internal fun ListControls(
     placeholder: String,
     tagPrefix: String,
     modifier: Modifier = Modifier,
+    tagVocabulary: List<String> = emptyList(),
 ) {
     val keyboardController = LocalSoftwareKeyboardController.current
     Column(modifier, verticalArrangement = Arrangement.spacedBy(AppDimens.itemSpacing)) {
@@ -92,6 +99,27 @@ internal fun ListControls(
             onExpandedChange = {},
             modifier = Modifier.fillMaxWidth(),
         ) {}
+        if (tagVocabulary.isNotEmpty()) {
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth().testTag(tagPrefix + "TagFilters"),
+            ) {
+                items(tagVocabulary, key = TagPolicy::key) { tag ->
+                    val key = TagPolicy.key(tag)
+                    val selected = key in query.tags
+                    FilterChip(
+                        selected = selected,
+                        onClick = {
+                            onQueryChange(query.copy(tags = if (selected) query.tags - key else query.tags + key))
+                        },
+                        label = { Text("#$tag") },
+                        leadingIcon = if (selected) {
+                            { Icon(painterResource(R.drawable.ic_check), contentDescription = null, modifier = Modifier.size(FilterChipDefaults.IconSize)) }
+                        } else null,
+                    )
+                }
+            }
+        }
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,

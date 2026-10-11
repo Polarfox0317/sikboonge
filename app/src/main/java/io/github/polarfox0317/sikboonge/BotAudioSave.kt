@@ -1,5 +1,7 @@
 package io.github.polarfox0317.sikboonge
 
+import java.util.concurrent.atomic.AtomicBoolean
+
 /** Bounds for explicit bot-audio saves; the source itself is never staged as a complete video. */
 internal object BotAudioSavePolicy {
     const val MAX_OUTPUT_BYTES = 8L * 1024L * 1024L * 1024L
@@ -67,4 +69,42 @@ internal class TransferProgressSampler(
 internal object BotAudioSaveTestHooks {
     @Volatile var accessOverride: TdlibFileAccess? = null
     @Volatile var beforeConvert: ((ExternalAudioInputBridge?) -> Unit)? = null
+}
+
+/** Keeps FFmpeg cancellation callbacks scoped to one bot save, including registration races. */
+internal class BotAudioSaveCancellationScope {
+    private val lock = Any()
+    private val sessions = linkedMapOf<Long, (Long) -> Unit>()
+    private val cancelledFlag = AtomicBoolean(false)
+
+    val isCancelled: Boolean get() = cancelledFlag.get()
+
+    fun registerSession(sessionId: Long, cancelSession: (Long) -> Unit) {
+        if (sessionId <= 0L) return
+        val cancelNow = synchronized(lock) {
+            if (cancelledFlag.get()) true else {
+                sessions[sessionId] = cancelSession
+                false
+            }
+        }
+        if (cancelNow) cancelSession(sessionId)
+    }
+
+    fun finishSession(sessionId: Long) {
+        synchronized(lock) { sessions.remove(sessionId) }
+    }
+
+    fun cancelSession(sessionId: Long) {
+        val cancel = synchronized(lock) { sessions.remove(sessionId) } ?: return
+        cancel(sessionId)
+    }
+
+    fun cancel(): Boolean {
+        val callbacks = synchronized(lock) {
+            if (!cancelledFlag.compareAndSet(false, true)) return false
+            sessions.toMap().also { sessions.clear() }
+        }
+        callbacks.forEach { (sessionId, cancelSession) -> runCatching { cancelSession(sessionId) } }
+        return true
+    }
 }

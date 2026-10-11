@@ -41,6 +41,7 @@ internal fun MediaCard(
     trailing: (@Composable () -> Unit)? = null,
     clickable: Boolean = true,
     showActions: Boolean = true,
+    tags: List<String> = emptyList(),
 ) {
     val colors = MaterialTheme.colorScheme
     val container by animateColorAsState(
@@ -88,6 +89,11 @@ internal fun MediaCard(
                         maxLines = 2, overflow = TextOverflow.Ellipsis)
                     Text(meta, style = MaterialTheme.typography.labelMedium,
                         color = colors.onSurfaceVariant)
+                    if (tags.isNotEmpty()) {
+                        Text(tags.joinToString(" ") { "#$it" }, maxLines = 1,
+                            overflow = TextOverflow.Ellipsis, color = colors.primary,
+                            style = MaterialTheme.typography.labelMedium)
+                    }
                 }
                 trailing?.invoke()
             }

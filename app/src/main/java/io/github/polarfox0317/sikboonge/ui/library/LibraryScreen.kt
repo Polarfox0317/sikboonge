@@ -48,6 +48,7 @@ import io.github.polarfox0317.sikboonge.ui.components.MediaMenuItem
 import io.github.polarfox0317.sikboonge.ui.components.MediaTile
 import io.github.polarfox0317.sikboonge.ui.components.RenameDialog
 import io.github.polarfox0317.sikboonge.ui.components.ScrollJumpBubbles
+import io.github.polarfox0317.sikboonge.ui.components.TagEditorDialog
 import io.github.polarfox0317.sikboonge.ui.state.AppActions
 import io.github.polarfox0317.sikboonge.ui.state.AppUiState
 import io.github.polarfox0317.sikboonge.ui.state.Destination
@@ -55,6 +56,8 @@ import io.github.polarfox0317.sikboonge.ui.state.DateRange
 import io.github.polarfox0317.sikboonge.ui.state.ListLayout
 import io.github.polarfox0317.sikboonge.ui.state.ListQuery
 import io.github.polarfox0317.sikboonge.ui.state.SortKey
+import io.github.polarfox0317.sikboonge.ui.state.matchesTagFilter
+import io.github.polarfox0317.sikboonge.ui.state.matchesTextTerms
 import io.github.polarfox0317.sikboonge.ui.theme.AppDimens
 import io.github.polarfox0317.sikboonge.ui.theme.WindowTier
 import java.text.DateFormat
@@ -83,6 +86,7 @@ internal fun LibraryScreen(
         bottom = contentPadding.calculateBottomPadding() + AppDimens.itemSpacing,
     )
     var editingPath by rememberSaveable { mutableStateOf<String?>(null) }
+    var editingTagPath by rememberSaveable { mutableStateOf<String?>(null) }
     LaunchedEffect(reselectionToken) {
         if (reselectionToken != 0) gridState.scrollToItem(0)
     }
@@ -99,12 +103,11 @@ internal fun LibraryScreen(
     }
     val visibleLibraryRows = remember(allLibraryRows, state.visibleHistory, state.libraryQuery) {
         val visibleCompletedPaths = state.visibleHistory.mapTo(hashSetOf()) { it.path }
-        val terms = normalizedSearchTerms(state.libraryQuery.text)
         val nowMs = System.currentTimeMillis()
         allLibraryRows.filter { row ->
             when (row) {
                 is LibraryRow.Completed -> row.result.path in visibleCompletedPaths
-                is LibraryRow.Pending -> matchesPendingDownload(row.download, terms, state.libraryQuery.range, nowMs)
+                is LibraryRow.Pending -> matchesPendingDownload(row.download, state.libraryQuery, nowMs)
             }
         }.sortLibraryRows(state.libraryQuery.sortKey, state.libraryQuery.ascending)
     }
@@ -127,6 +130,7 @@ internal fun LibraryScreen(
                     placeholder = "\uBCF4\uAD00\uD568 \uAC80\uC0C9",
                     tagPrefix = "library",
                     modifier = Modifier.fillMaxWidth(),
+                    tagVocabulary = state.libraryTagVocabulary,
                 )
             }
         }
@@ -160,6 +164,8 @@ internal fun LibraryScreen(
                 is LibraryRow.Pending -> DownloadProgressCard(
                     download = row.download,
                     onCancel = actions::onCancelDownload,
+                    onPause = actions::onPauseDownload,
+                    onResume = actions::onResumeDownload,
                     useGridTile = state.libraryLayout == ListLayout.Grid,
                     modifier = Modifier.animateItem()
                         .fillMaxWidth()
@@ -180,6 +186,7 @@ internal fun LibraryScreen(
                 val menuItems = listOf(
                     MediaMenuItem("\uC7AC\uC0DD\uBAA9\uB85D\uC5D0 \uCD94\uAC00", R.drawable.ic_playlist_add, onClick = { actions.onAddToQueue(result) }, testTag = "libraryAddToQueue"),
                     MediaMenuItem("\uD30C\uC77C \uC774\uB984 \uC218\uC815", R.drawable.ic_media_edit, onClick = { editingPath = result.path }, testTag = "libraryTitleEdit_${result.name}"),
+                    MediaMenuItem("\uD0DC\uADF8 \uD3B8\uC9D1", R.drawable.ic_tag, onClick = { editingTagPath = result.path }, testTag = "libraryTagEdit_${result.name}"),
                     MediaMenuItem("\uB2E4\uB978 \uC571\uC73C\uB85C \uC7AC\uC0DD", R.drawable.ic_media_external, onClick = { actions.onExternalPlayAudio(result) }, testTag = "audioExternalPlay"),
                     MediaMenuItem("\uACF5\uC720", R.drawable.ic_media_share, onClick = { actions.onShareAudio(result) }, testTag = "libraryShare"),
                     MediaMenuItem(if (state.saving) "\uD30C\uC77C\uB85C \uC800\uC7A5 \uC911" else "\uD30C\uC77C\uB85C \uC800\uC7A5", R.drawable.ic_media_save, enabled = !state.saving, onClick = { actions.onSaveAudioToDevice(result) }, testTag = "librarySave"),
@@ -214,6 +221,7 @@ internal fun LibraryScreen(
                             thumbnail = itemThumbnail,
                             actions = { itemActions(true) },
                             modifier = itemModifier,
+                            tags = result.tags,
                         )
                     } else {
                         MediaCard(
@@ -227,6 +235,7 @@ internal fun LibraryScreen(
                             thumbnail = itemThumbnail,
                             actions = { itemActions(false) },
                             modifier = itemModifier,
+                            tags = result.tags,
                         )
                     }
                 }
@@ -264,6 +273,15 @@ internal fun LibraryScreen(
             extension = extension,
         )
     }
+    state.history.firstOrNull { it.path == editingTagPath }?.let { result ->
+        TagEditorDialog(
+            initial = result.tags,
+            suggestions = state.allTagVocabulary,
+            onConfirm = { actions.onSetAudioTags(result, it); editingTagPath = null },
+            onDismiss = { editingTagPath = null },
+            testTagPrefix = "library",
+        )
+    }
 }
 
 private sealed interface LibraryRow {
@@ -278,23 +296,14 @@ private sealed interface LibraryRow {
     }
 }
 
-private fun normalizedSearchTerms(value: String): List<String> =
-    Normalizer.normalize(value, Normalizer.Form.NFC)
-        .lowercase(Locale.ROOT)
-        .trim()
-        .split(Regex("[\\s\\p{Z}]+"))
-        .filter(String::isNotEmpty)
-
 private fun matchesPendingDownload(
     download: LibraryDownload,
-    terms: List<String>,
-    range: DateRange,
+    query: ListQuery,
     nowMs: Long,
 ): Boolean {
-    val normalizedName = Normalizer.normalize(download.name, Normalizer.Form.NFC)
-        .lowercase(Locale.ROOT)
-    if (!terms.all(normalizedName::contains)) return false
-    return when (range) {
+    if (!matchesTextTerms(download.name, emptyList(), query.text)) return false
+    if (!matchesTagFilter(emptyList(), query.tags)) return false
+    return when (query.range) {
         DateRange.All -> true
         DateRange.Week -> download.date in (nowMs - 7L * 86_400_000L)..nowMs
         DateRange.Month -> download.date in (nowMs - 30L * 86_400_000L)..nowMs

@@ -25,7 +25,6 @@ import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import io.github.polarfox0317.sikboonge.ConversionState
 import io.github.polarfox0317.sikboonge.PlayerArtwork
 import io.github.polarfox0317.sikboonge.R
 import io.github.polarfox0317.sikboonge.StreamingState
@@ -37,7 +36,6 @@ import io.github.polarfox0317.sikboonge.ui.state.AppUiState
 import io.github.polarfox0317.sikboonge.ui.theme.AppDimens
 import io.github.polarfox0317.sikboonge.ui.theme.WindowTier
 import java.io.File
-import java.util.Locale
 
 // app choice: only genuinely low windows (landscape phones) scroll the artwork/title section.
 private val CompactPlayerHeight = 480.dp
@@ -283,8 +281,10 @@ private fun ExpandedPlayer(
     }
     val stream = state.stream
     val canSave = stream.source == PlaybackSource.BOT
-    val saving = state.conversion.running && state.playerSaveSourceKey == playerSourceKey(stream)
-    val saveProgressText = if (saving) conversionProgressText(state.conversion) else null
+    val currentPlayerSourceKey = playerSourceKey(stream)
+    val matchingBotDownload = state.downloads.firstOrNull { it.sourceBotFileId == stream.botFileId }
+    val saving = state.preparingPlayerSaveSourceKey == currentPlayerSourceKey || matchingBotDownload != null
+    val saveProgressText = matchingBotDownload?.let(::libraryDownloadProgressText)
     Column(
         modifier.fillMaxSize().padding(AppDimens.itemSpacing),
         verticalArrangement = Arrangement.spacedBy(AppDimens.selectionBadgeInset),
@@ -345,7 +345,7 @@ private fun ExpandedPlayer(
                 PlayerIconAction(
                     if (saving) "오디오 저장 중" else "오디오 저장", R.drawable.ic_media_save,
                     actions::onSaveStream, modifier = Modifier.testTag("streamSave"),
-                    enabled = !state.conversion.running && stream.ready && stream.botFileId != null,
+                    enabled = !saving && stream.ready && stream.botFileId != null,
                     busy = saving, stateDescription = saveProgressText,
                 )
             }
@@ -550,18 +550,17 @@ private fun formatTime(ms: Long): String {
     }
 }
 
-private fun conversionProgressText(state: ConversionState): String? {
-    val progress = state.progress?.takeIf { it.isFinite() }
-    val hasTransfer = state.receivedBytes != null || state.bytesPerSecond != null
-    if (progress == null && !hasTransfer) return null
-    val percentage = progress?.let { "${(it.coerceIn(0f, 1f) * 100).toInt()}%" } ?: "진행률 확인 중"
-    if (!hasTransfer) return percentage
-    val speed = state.bytesPerSecond?.coerceAtLeast(0L)
-    val rate = when {
-        speed == null -> "속도 확인 중"
-        speed >= 1_000_000L -> String.format(Locale.KOREA, "%.1f MB/s", speed / 1_000_000.0)
-        speed >= 1_000L -> String.format(Locale.KOREA, "%.1f KB/s", speed / 1_000.0)
-        else -> "$speed B/s"
-    }
-    return "$percentage · $rate"
+private fun libraryDownloadProgressText(download: io.github.polarfox0317.sikboonge.LibraryDownload): String = when {
+    download.stage == "대기 중" -> "저장 대기 중"
+    download.bytesPerSecond != null -> io.github.polarfox0317.sikboonge.DownloadProgress.format(
+        io.github.polarfox0317.sikboonge.DownloadMetrics(
+            progress = download.progress,
+            bytesPerSecond = download.bytesPerSecond,
+            remainingSeconds = download.remainingSeconds,
+        ),
+    ).let { metrics -> listOfNotNull(metrics.percent, metrics.details).joinToString(" · ").ifBlank { "저장 중" } }
+    download.progress != null -> io.github.polarfox0317.sikboonge.DownloadProgress.format(
+        io.github.polarfox0317.sikboonge.DownloadMetrics(progress = download.progress),
+    ).percent?.let { "저장 중 · $it" } ?: "저장 중"
+    else -> download.stage.ifBlank { "저장 중" }
 }

@@ -121,32 +121,14 @@ internal object UpdateController {
         val currentCode = packageVersionCode(info)
         val lastSeenCode = preferences(context).getLong(KEY_LAST_SEEN_CHANGELOG_VERSION_CODE, 0L)
         val isUpdatedInstall = info.lastUpdateTime > info.firstInstallTime
-        if (currentCode <= lastSeenCode || (!isUpdatedInstall && lastSeenCode == 0L)) return@runCatching null
-        val notes = bundledChangelog(currentCode) ?: return@runCatching null
+        val notes = pendingBundledChangelog(currentCode, lastSeenCode, isUpdatedInstall)
+            ?: return@runCatching null
         AppChangelog(
             versionCode = currentCode,
             versionName = info.versionName.orEmpty(),
             notes = notes,
         )
     }.getOrNull()
-
-    private fun bundledChangelog(versionCode: Long): List<ReleaseNoteBlock>? = when (versionCode) {
-        109L, 110L -> listOf(
-            ReleaseNoteBlock.Item("봇 연결 후 검색과 영상 목록 화면으로 바로 이동하도록 수정했어요."),
-            ReleaseNoteBlock.Item("연결이 끊기거나 재연결 중이어도 기존에 받은 영상 목록을 볼 수 있어요."),
-            ReleaseNoteBlock.Item("봇에서 저장한 오디오가 변환 탭의 추출 완료 화면에 나타나는 문제를 수정했어요."),
-        )
-        111L -> listOf(
-            ReleaseNoteBlock.Heading("다운로드 알림 개선"),
-            ReleaseNoteBlock.Item("다운로드 중인 오디오를 보관함 목록에서 확인할 수 있어요.", depth = 1),
-            ReleaseNoteBlock.Item("진행률, 다운로드 속도, 예상 남은 시간을 보관함과 시스템 알림에 표시해요.", depth = 1),
-            ReleaseNoteBlock.Item("보관함과 시스템 알림에서 다운로드를 중지할 수 있어요.", depth = 1),
-            ReleaseNoteBlock.Item("다운로드가 완료되면 시스템 알림으로 알려줘요.", depth = 1),
-            ReleaseNoteBlock.Heading("업데이트 안내 개선"),
-            ReleaseNoteBlock.Item("언어에 맞는 변경사항을 목록으로 정리해 읽기 편하게 개선했어요.", depth = 1),
-        )
-        else -> null
-    }
 
     val currentVersionName: String
         get() = contextOrNull()?.let { context ->

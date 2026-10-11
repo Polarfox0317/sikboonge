@@ -21,6 +21,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalAccessibilityManager
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
@@ -28,17 +29,23 @@ import androidx.compose.ui.semantics.semantics
 import kotlinx.coroutines.delay
 
 internal class MessageController {
-    internal data class Message(val id: Long, val text: String, val persistent: Boolean)
-    internal var current by mutableStateOf<Message?>(null)
+    private val lifetime = MessageLifetimePolicy()
+    internal var current by mutableStateOf<MessageLifetimePolicy.Message?>(null)
         private set
-    private var nextId = 0L
 
     fun show(message: String, persistent: Boolean = false) {
-        current = Message(++nextId, message, persistent)
+        lifetime.show(message, persistent)
+        current = lifetime.current
     }
 
-    fun dismiss() {
-        current = null
+    fun updateProgress(jobActive: Boolean, text: String) {
+        lifetime.updateProgress(jobActive, text)
+        current = lifetime.current
+    }
+
+    fun dismiss(expectedId: Long? = null) {
+        lifetime.dismiss(expectedId)
+        current = lifetime.current
     }
 }
 
@@ -49,14 +56,19 @@ internal fun MessageHost(
     modifier: Modifier = Modifier,
 ) {
     val message = controller.current
+    val accessibilityManager = LocalAccessibilityManager.current
     var lastMessage by remember(controller) { mutableStateOf(message) }
-    LaunchedEffect(controller, message) {
+    LaunchedEffect(controller, message?.id) {
         if (message != null) {
             lastMessage = message
             if (!message.persistent) {
-                // app choice: 3.5s per user instruction.
-                delay(3500L)
-                if (controller.current?.id == message.id) controller.dismiss()
+                // Keep the app's 3.5s default while allowing accessibility reading time.
+                val timeout = accessibilityManager?.calculateRecommendedTimeoutMillis(
+                    TRANSIENT_MESSAGE_TIMEOUT_MS,
+                    containsText = true,
+                ) ?: TRANSIENT_MESSAGE_TIMEOUT_MS
+                delay(timeout.coerceAtLeast(TRANSIENT_MESSAGE_TIMEOUT_MS))
+                controller.dismiss(message.id)
             }
         }
     }

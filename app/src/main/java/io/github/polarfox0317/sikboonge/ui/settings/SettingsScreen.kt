@@ -38,6 +38,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -46,10 +47,13 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.polarfox0317.sikboonge.AudioFormat
+import io.github.polarfox0317.sikboonge.DownloadExecutionMode
+import io.github.polarfox0317.sikboonge.ThemeModeStore
 import io.github.polarfox0317.sikboonge.R
 import io.github.polarfox0317.sikboonge.ui.components.DisconnectDialog
 import io.github.polarfox0317.sikboonge.ui.components.FormColumn
 import io.github.polarfox0317.sikboonge.ui.components.SectionCard
+import io.github.polarfox0317.sikboonge.ui.components.ThemeModeSelector
 import io.github.polarfox0317.sikboonge.ui.shell.LocalUpdateController
 import io.github.polarfox0317.sikboonge.ui.shell.ReleaseNotesBody
 import io.github.polarfox0317.sikboonge.ui.shell.releaseNotes
@@ -77,6 +81,7 @@ internal fun SettingsScreen(
     val updateController = LocalUpdateController.current
     val updateStatus by updateController.status.collectAsStateWithLifecycle()
     val autoCheckEnabled by updateController.autoCheckEnabled.collectAsStateWithLifecycle()
+    val themeMode by ThemeModeStore.mode.collectAsStateWithLifecycle()
 
     FormColumn(modifier.fillMaxSize().padding(contentPadding).consumeWindowInsets(contentPadding)) {
         SectionCard(
@@ -123,6 +128,46 @@ internal fun SettingsScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                }
+            },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        SectionCard(
+            title = { Text("봇 영상 저장 방식") },
+            body = {
+                Text(
+                    if (state.downloadExecutionMode == DownloadExecutionMode.Sequential) {
+                        "차례로 저장하면 저장을 누른 순서대로 한 건씩 다운로드해요. 일시 중지한 항목은 건너뛰고 다음 항목을 진행해요."
+                    } else {
+                        "동시에 저장하면 최대 3건을 함께 다운로드해요."
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Column(Modifier.selectableGroup()) {
+                    listOf(
+                        DownloadExecutionMode.Sequential to "차례로 저장",
+                        DownloadExecutionMode.Parallel to "동시에 저장",
+                    ).forEach { (mode, label) ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth()
+                                .heightIn(min = 56.dp)
+                                .selectable(
+                                    selected = state.downloadExecutionMode == mode,
+                                    onClick = { actions.onDownloadExecutionModeChanged(mode) },
+                                    role = Role.RadioButton,
+                                )
+                                .testTag("settingsDownloadMode_${mode.name}"),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            RadioButton(
+                                selected = state.downloadExecutionMode == mode,
+                                onClick = null,
+                            )
+                            Text(label, modifier = Modifier.padding(start = AppDimens.itemSpacing),
+                                style = MaterialTheme.typography.bodyLarge)
+                        }
+                    }
                 }
             },
             modifier = Modifier.fillMaxWidth(),
@@ -183,6 +228,21 @@ internal fun SettingsScreen(
             modifier = Modifier.fillMaxWidth(),
         )
         SectionCard(
+            title = { Text("화면 모드") },
+            body = {
+                Text(
+                    "라이트, 다크 또는 기기 설정에 맞춰 표시해요.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                ThemeModeSelector(
+                    selected = themeMode,
+                    onSelect = { ThemeModeStore.set(context, it) },
+                )
+            },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        SectionCard(
             title = { Text("\uC815\uBCF4") },
             body = {
                 Column(verticalArrangement = Arrangement.spacedBy(AppDimens.itemSpacing)) {
@@ -191,6 +251,32 @@ internal fun SettingsScreen(
                         value = updateController.currentVersionName,
                         tag = "settingsAppVersion",
                     )
+                    Row(
+                        modifier = Modifier.fillMaxWidth()
+                            .heightIn(min = 64.dp)
+                            .clickable(
+                                onClickLabel = "\uC624\uD508\uC18C\uC2A4 \uB77C\uC774\uC120\uC2A4 \uC5F4\uAE30",
+                                role = Role.Button,
+                                onClick = actions::onOpenLicenses,
+                            )
+                            .testTag("openSourceLicenses"),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("\uC624\uD508\uC18C\uC2A4 \uB77C\uC774\uC120\uC2A4", style = MaterialTheme.typography.bodyLarge)
+                            Text(
+                                "\uC0AC\uC6A9\uD55C \uB77C\uC774\uBE0C\uB7EC\uB9AC\uC640 \uB77C\uC774\uC120\uC2A4\uB97C \uD655\uC778\uD574\uC694.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Icon(
+                            painter = painterResource(R.drawable.ic_keyboard_arrow_down),
+                            contentDescription = null,
+                            modifier = Modifier.size(24.dp).graphicsLayer(rotationZ = -90f),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     Row(
                         modifier = Modifier.fillMaxWidth()
                             .heightIn(min = 56.dp)

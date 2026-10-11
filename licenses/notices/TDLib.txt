@@ -1,0 +1,51 @@
+TDLib Android Core 0.1.1 local package evidence
+===== Original POM =====
+<?xml version="1.0" encoding="UTF-8"?>
+<project xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd" xmlns="http://maven.apache.org/POM/4.0.0"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <!-- This module was also published with a richer model, Gradle metadata,  -->
+  <!-- which should be used instead. Do not delete the following line which  -->
+  <!-- is to indicate to Gradle or any Gradle module metadata file consumer  -->
+  <!-- that they should prefer consuming it instead. -->
+  <!-- do_not_remove: published-with-gradle-metadata -->
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>io.github.tdlib-android</groupId>
+  <artifactId>core</artifactId>
+  <version>0.1.1</version>
+  <packaging>aar</packaging>
+  <name>tdlib-android-core</name>
+  <description>Community-maintained TDLib prebuilt AAR for Android. Auto-updated. Zero build steps.</description>
+  <url>https://github.com/AkashPriyadarshii/tdlib-android</url>
+  <inceptionYear>2026</inceptionYear>
+  <licenses>
+    <license>
+      <name>Boost Software License 1.0</name>
+      <url>https://www.boost.org/LICENSE_1_0.txt</url>
+    </license>
+  </licenses>
+  <developers>
+    <developer>
+      <id>AkashPriyadarshii</id>
+      <name>Akash Priyadarshi</name>
+      <url>https://github.com/AkashPriyadarshii</url>
+    </developer>
+  </developers>
+  <scm>
+    <connection>scm:git:git://github.com/AkashPriyadarshii/tdlib-android.git</connection>
+    <developerConnection>scm:git:ssh://git@github.com/AkashPriyadarshii/tdlib-android.git</developerConnection>
+    <url>https://github.com/AkashPriyadarshii/tdlib-android</url>
+  </scm>
+  <dependencies>
+    <dependency>
+      <groupId>org.jetbrains.kotlin</groupId>
+      <artifactId>kotlin-stdlib</artifactId>
+      <version>2.0.21</version>
+      <scope>compile</scope>
+    </dependency>
+  </dependencies>
+</project>
+
+===== AAR license/notice metadata entries =====
+META-INF/com/android/build/gradle/aar-metadata.properties (156 bytes)
+
+The package metadata does not pin TDLib source commit or native dependency source identifiers. The upstream TDLib core license is provided separately as BSL-1.0.txt.

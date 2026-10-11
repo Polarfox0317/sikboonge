@@ -23,8 +23,8 @@ android {
         applicationId = "io.github.polarfox0317.sikboonge"
         minSdk = 26
         targetSdk = 37
-        versionCode = 111
-        versionName = "1.0.2"
+        versionCode = 125
+        versionName = "1.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
     }
@@ -42,10 +42,9 @@ android {
         }
         getByName("debug") {
             applicationIdSuffix = ".debug"
-            versionNameSuffix = "-debug"
         }
     }
-    buildFeatures { compose = true }
+    buildFeatures { compose = true; buildConfig = true }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     packaging { jniLibs.useLegacyPackaging = false }
     sourceSets["main"].assets.srcDir(rootProject.file("licenses"))

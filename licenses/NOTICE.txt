@@ -17,7 +17,7 @@ Gradle configuration allow rebuilding/relinking against a compatible AAR.
 The configured dependency is the non-GPL audio variant, not a -gpl variant.
 Cached libavcodec build strings for both configured ABIs contain neither
 --enable-gpl nor --enable-nonfree; a future APK was not inspected by this audit.
-Smart Exception Java 0.2.1, LGPL-3.0: https://github.com/arthenica/smart-exception
+Smart Exception Java 0.2.1, BSD-3-Clause: https://github.com/arthenica/smart-exception
 AndroidX, Compose, Material3, Media3, Kotlin and coroutines: Apache-2.0.
 Material toolbar/navigation vector icons: Google Material Icons / Material Symbols, Apache-2.0.
 Source: https://github.com/google/material-design-icons

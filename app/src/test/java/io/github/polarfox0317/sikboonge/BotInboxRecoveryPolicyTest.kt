@@ -41,6 +41,28 @@ class BotInboxRecoveryPolicyTest {
     }
 
     @Test
+    fun refreshRetriesAnyDisconnectedSessionUnlessReconnectIsAlreadyInFlight() {
+        assertFalse(
+            BotInboxRecoveryPolicy.shouldReconnectOnRefresh(
+                isConnected = true,
+                reconnectInFlight = false,
+            ),
+        )
+        assertTrue(
+            BotInboxRecoveryPolicy.shouldReconnectOnRefresh(
+                isConnected = false,
+                reconnectInFlight = false,
+            ),
+        )
+        assertFalse(
+            BotInboxRecoveryPolicy.shouldReconnectOnRefresh(
+                isConnected = false,
+                reconnectInFlight = true,
+            ),
+        )
+    }
+
+    @Test
     fun staleRefreshResponsesCannotCompleteANewerConnectionRequest() {
         fun isCurrent(requestId: Long, generation: Long, ownerIsCurrent: Boolean = true) =
             BotInboxRecoveryPolicy.isCurrentRefresh(

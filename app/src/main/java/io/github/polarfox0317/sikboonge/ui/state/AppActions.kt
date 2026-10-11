@@ -5,6 +5,7 @@ import io.github.polarfox0317.sikboonge.AudioFormat
 import io.github.polarfox0317.sikboonge.AudioResult
 import io.github.polarfox0317.sikboonge.BotCredentials
 import io.github.polarfox0317.sikboonge.BotVideo
+import io.github.polarfox0317.sikboonge.DownloadExecutionMode
 
 /** All callbacks are invoked on the main thread, like the original Compose callbacks. */
 interface AppActions {
@@ -31,10 +32,14 @@ interface AppActions {
     fun onSelectReviewSampleVideo() = Unit
     /** Shared output format for local conversion, player saves and bot saves. */
     fun onSaveFormatChanged(value: AudioFormat)
+    /** Persists how queued Bot video saves are executed. */
+    fun onDownloadExecutionModeChanged(value: DownloadExecutionMode)
     fun onLibraryQueryChanged(query: ListQuery)
     fun onBotQueryChanged(query: ListQuery)
     fun onLayoutChanged(destination: Destination, layout: ListLayout)
     fun onOpenSettings()
+    fun onOpenLicenses() = Unit
+    fun onOpenLicense(id: String) = Unit
     /** Opens the reconnect form within the Bot tab while preserving its cached inbox. */
     fun onOpenBotSetup()
     fun onCloseBotSetup()
@@ -42,6 +47,8 @@ interface AppActions {
     fun onCancelConversion()
     /** Cancels a specific pending or active Telegram save. */
     fun onCancelDownload(id: Long)
+    fun onPauseDownload(id: Long) = Unit
+    fun onResumeDownload(id: Long) = Unit
     /** Replaces notifications.launch(POST_NOTIFICATIONS). */
     fun onRequestNotificationPermission()
     /** Replaces the RequestPermission result callback. */
@@ -92,6 +99,7 @@ interface AppActions {
     fun onShareAudio(result: AudioResult)
     /** Replaces renameLibraryItem; the requested title excludes the existing extension. */
     fun onRenameAudio(result: AudioResult, titleStem: String)
+    fun onSetAudioTags(result: AudioResult, tags: List<String>)
     /** Replaces requestLibraryDelete; an empty list dismisses the pending confirmation. */
     fun onRequestLibraryDelete(results: List<AudioResult>)
     /** Replaces removeLibraryItems after user confirmation. */
@@ -118,6 +126,7 @@ interface AppActions {
     fun onSaveBotVideo(video: BotVideo, format: AudioFormat)
     /** Replaces BotScreen.onRename and delegates the 120-character title policy. */
     fun onRenameBotVideo(video: BotVideo, title: String)
+    fun onSetBotVideoTags(video: BotVideo, tags: List<String>)
     /** Replaces BotScreen.onExternalPlay and waits for successful Bot resolution. */
     fun onExternalPlayBotVideo(video: BotVideo)
     /** Replaces requestBotDelete; an empty set dismisses the pending confirmation. */

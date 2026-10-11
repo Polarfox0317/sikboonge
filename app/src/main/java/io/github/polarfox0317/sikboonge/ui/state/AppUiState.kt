@@ -7,12 +7,20 @@ import io.github.polarfox0317.sikboonge.ConversionState
 import io.github.polarfox0317.sikboonge.LibraryDownload
 import io.github.polarfox0317.sikboonge.StreamingState
 import io.github.polarfox0317.sikboonge.PlaybackSource
+import io.github.polarfox0317.sikboonge.DownloadExecutionMode
 
 sealed interface Destination {
     data object Bot : Destination
     data object Convert : Destination
     data object Library : Destination
     data object Settings : Destination
+}
+
+/** Settings pages remain under the originating top-level tab. */
+sealed interface SettingsPage {
+    data object Root : SettingsPage
+    data object Licenses : SettingsPage
+    data class LicenseDetail(val id: String) : SettingsPage
 }
 
 /** A queue entry retains display metadata and stable playback identity. */
@@ -38,11 +46,16 @@ data class AppUiState(
     val videoArtworkPath: String? = null,
     val reviewSampleVideoAvailable: Boolean = false,
     val saveFormat: AudioFormat = AudioFormat.ORIGINAL,
+    val downloadExecutionMode: DownloadExecutionMode = DownloadExecutionMode.Parallel,
     val libraryQuery: ListQuery = ListQuery(),
     val botQuery: ListQuery = ListQuery(),
+    val libraryTagVocabulary: List<String> = emptyList(),
+    val botTagVocabulary: List<String> = emptyList(),
+    val allTagVocabulary: List<String> = emptyList(),
     val libraryLayout: ListLayout = ListLayout.List,
     val botLayout: ListLayout = ListLayout.List,
     val settingsOrigin: Destination = Destination.Bot,
+    val settingsPage: SettingsPage = SettingsPage.Root,
     val conversion: ConversionState = ConversionState(),
     val history: List<AudioResult> = emptyList(),
     val downloads: List<LibraryDownload> = emptyList(),
@@ -60,7 +73,8 @@ data class AppUiState(
     val pendingSaveResult: AudioResult? = null,
     val saving: Boolean = false,
     val renamingAudioPath: String? = null,
-    val preparingBotSaveMessageId: Long? = null,
+    val preparingBotSaveSources: Map<Long, Int> = emptyMap(),
+    val preparingPlayerSaveSourceKey: String? = null,
     val notificationsAllowed: Boolean = false,
     val diagnosticsAvailable: Boolean = false,
     val playerExpanded: Boolean = true,
@@ -72,6 +86,9 @@ data class AppUiState(
     val queueSelectedKeys: Set<String> = emptySet(),
     val queueResumeIndex: Int = 0,
 ) {
+    val preparingBotSaveMessageId: Long? get() = preparingBotSaveSources.keys.firstOrNull()
+    val preparingBotSaveMessageIds: Set<Long> get() = preparingBotSaveSources.keys
+    val preparingBotSaveFileIds: Set<Int> get() = preparingBotSaveSources.values.toSet()
     val videoSelected: Boolean get() = videoUri != null
     val visibleHistory: List<AudioResult> get() = filterLibrary(history, libraryQuery)
     val visibleBotVideos get() = filterBot(bot.videos, botQuery)

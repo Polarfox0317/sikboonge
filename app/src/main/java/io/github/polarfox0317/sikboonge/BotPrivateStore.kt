@@ -59,7 +59,11 @@ internal class BotPrivateStore(
         get() = synchronized(INBOX_LOCK) { readInboxStrict().videos }
         set(value) = synchronized(INBOX_LOCK) {
             val stored = readInboxStrict()
-            writeInbox(BotInboxDeletionPolicy.visibleRows(value, stored.tombstones).takeLast(MAX_VIDEOS), stored.tombstones)
+            val rows = value.map { video ->
+                val previous = stored.videos.firstOrNull { it.chatId == video.chatId && it.messageId == video.messageId }
+                video.mergeThumbnailMetadata(previous)
+            }
+            writeInbox(BotInboxDeletionPolicy.visibleRows(rows, stored.tombstones).takeLast(MAX_VIDEOS), stored.tombstones)
         }
 
     val deletedMessageKeys: Set<BotMessageKey>
@@ -89,6 +93,20 @@ internal class BotPrivateStore(
         val updated = stored.videos.toMutableList().also { it[index] = renamed }
         writeInbox(updated, stored.tombstones)
         renamed
+    }
+
+    /** Persist normalized user tags for one exact paired-chat message. */
+    fun setVideoTags(chatId: Long, messageId: Long, tags: List<String>): BotVideo? = synchronized(INBOX_LOCK) {
+        if (chatId <= 0L || messageId <= 0L) return@synchronized null
+        val key = BotMessageKey(chatId, messageId)
+        val stored = readInboxStrict()
+        if (key in stored.tombstones) return@synchronized null
+        val index = stored.videos.indexOfFirst { it.chatId == chatId && it.messageId == messageId }
+        if (index < 0) return@synchronized null
+        val updatedVideo = stored.videos[index].copy(tags = TagPolicy.normalizeTags(tags))
+        val updated = stored.videos.toMutableList().also { it[index] = updatedVideo }
+        writeInbox(updated, stored.tombstones)
+        updatedVideo
     }
 
     @Synchronized
@@ -139,6 +157,7 @@ internal class BotPrivateStore(
                 thumbnailBase64 = row.optString("thumb_mini", "").take(MAX_MINI_BASE64_CHARS),
                 thumbnailPath = row.optString("thumb_path", "").takeIf(String::isNotBlank)?.take(2048),
                 customTitle = row.optString("custom_title", "").take(BotVideoTitlePolicy.MAX_TITLE_CHARS).takeIf(String::isNotBlank),
+                tags = TagPolicy.normalizeTags(row.optJSONArray("tags")?.let { tags -> (0 until tags.length()).mapNotNull { tags.optString(it, null) } }.orEmpty()),
             )
         } }.takeLast(MAX_VIDEOS)
 
@@ -168,7 +187,8 @@ internal class BotPrivateStore(
                 .put("remote", video.remoteFileId).put("mime", video.mimeType.take(128))
                 .put("thumb_remote", video.thumbnailRemoteFileId.take(512)).put("thumb_id", video.thumbnailFileId.coerceAtLeast(0))
                 .put("thumb_mini", video.thumbnailBase64.take(MAX_MINI_BASE64_CHARS)).put("thumb_path", video.thumbnailPath.orEmpty().take(2048))
-                .put("custom_title", video.customTitle.orEmpty().take(BotVideoTitlePolicy.MAX_TITLE_CHARS)))
+                .put("custom_title", video.customTitle.orEmpty().take(BotVideoTitlePolicy.MAX_TITLE_CHARS))
+                .put("tags", JSONArray(TagPolicy.normalizeTags(video.tags))))
             }
         }
         val deleted = JSONArray().apply {
