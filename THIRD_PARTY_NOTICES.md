@@ -1,6 +1,6 @@
 # Third-party notices and source provenance
 
-The app-authored portions of **sikboonge** are licensed under the root [MIT License](LICENSE), Copyright (c) 2026 Polarfox0317. External code, icons, wrapper files, dependency binaries, and imported reference material retain their original licenses and notices. This document does not relicense them. Evidence and remaining provenance limits are recorded in [licenses/](licenses/).
+The app-authored portions of **sikboonge** are licensed under the root [MIT License](LICENSE), Copyright (c) 2026 Polarfox0317. External code, icons, wrapper files, dependency binaries, and imported reference material retain their original licenses and notices. This document does not relicense them.
 
 ## Runtime dependencies
 
@@ -18,7 +18,6 @@ The audio AAR also supplies codecs/support libraries with their own LGPL, BSD-st
 * Google Material Symbols / Material Icons: [official source and license](https://github.com/google/material-design-icons), Apache-2.0. The 39 source-commented files in `app/src/main/res/drawable/` import Material Symbols SVG geometry into Android vector resources. Local format, sizing, tint, and symbol-variant choices are adaptations; preserve the per-file source comments, applicable upstream notices, and `licenses/Apache-2.0.txt`. These icon paths are third-party assets, not MIT-authored branding.
 * Gradle wrapper: `gradlew`, `gradlew.bat`, and `gradle/wrapper/gradle-wrapper.jar` originate from [Gradle](https://github.com/gradle/gradle), Apache-2.0 with its third-party exceptions. The launchers retain Apache/SPDX headers. The wrapper distribution is pinned to 9.4.1; its JAR checksum was matched against the [official release checksums](https://gradle.org/release-checksums/). Preserve headers and applicable Gradle [license/notices](https://github.com/gradle/gradle/blob/v9.4.1/LICENSE).
 * JUnit 4.13.2: [upstream license](https://github.com/junit-team/junit4/blob/main/LICENSE-junit.txt), EPL-1.0, tests only. Dropshots 0.6.0: [upstream source/license](https://github.com/dropbox/dropshots), Apache-2.0, test library/build plugin. Neither is relicensed by the root MIT file.
-
 
 
 ## Binary distribution and LGPL
