@@ -266,7 +266,6 @@ internal fun LibraryScreen(
         val stem = if (extension.isBlank()) result.name else result.name.substring(0, dot)
         RenameDialog(
             initial = stem,
-            maxLength = Int.MAX_VALUE,
             onConfirm = { actions.onRenameAudio(result, it); editingPath = null },
             onDismiss = { editingPath = null },
             bot = false,

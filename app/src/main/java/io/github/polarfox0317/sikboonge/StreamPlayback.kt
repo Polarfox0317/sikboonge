@@ -56,6 +56,7 @@ object StreamPlayback {
 
     fun playLocal(context: Context, result: AudioResult) {
         requireMainThread()
+        BotRuntime.cancelPendingPlayback()
         appContext = context.applicationContext
         val file = LocalPlaybackPolicy.ownedAudioFile(context.filesDir, result.path)
         if (file == null) {
@@ -109,9 +110,14 @@ object StreamPlayback {
     }
 
     fun pause() = command(StreamingAudioService.ACTION_PAUSE)
-    fun resume() = command(StreamingAudioService.ACTION_RESUME)
+    fun resume() {
+        requireMainThread()
+        BotRuntime.cancelPendingPlayback()
+        command(StreamingAudioService.ACTION_RESUME)
+    }
     fun stop() {
         requireMainThread()
+        BotRuntime.cancelPendingPlayback()
         mutableState.value = StreamingState()
         command(StreamingAudioService.ACTION_STOP)
     }

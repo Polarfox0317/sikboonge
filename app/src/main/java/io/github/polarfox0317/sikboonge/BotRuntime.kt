@@ -17,11 +17,20 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.drinkless.tdlib.Client
 import org.drinkless.tdlib.TdApi
+
+internal class BotPlaybackRequestGeneration {
+    private val generation = AtomicLong()
+
+    fun issue(): Long = generation.incrementAndGet()
+    fun invalidate() { generation.incrementAndGet() }
+    fun isCurrent(requestGeneration: Long): Boolean = generation.get() == requestGeneration
+}
 
 /**
  * Staged native Bot API session. This is a bot-token MTProto client, not a user-phone login and not
@@ -39,6 +48,7 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
     private val authScheduler = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "telegram-bot-auth-timeout").apply { isDaemon = true } }
     private val mutableState = MutableStateFlow(BotUiState())
     private val setupLoadInFlight = AtomicBoolean(false)
+    private val playbackRequestGeneration = BotPlaybackRequestGeneration()
     val state: StateFlow<BotUiState> = mutableState.asStateFlow()
 
     @Volatile private var appContext: Context? = null
@@ -591,14 +601,7 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
     ) {
         val app = context.applicationContext
         appContext = app
-        val customTitle = try {
-            BotVideoTitlePolicy.normalize(title)
-        } catch (_: IllegalArgumentException) {
-            val error = "제목은 ${BotVideoTitlePolicy.MAX_TITLE_CHARS}자 이하로 입력해 주세요."
-            publish { copy(error = error) }
-            mainHandler.post { onComplete(error) }
-            return
-        }
+        val customTitle = BotVideoTitlePolicy.normalize(title)
 
         io.execute {
             val targetExists = synchronized(lock) {
@@ -1377,15 +1380,22 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
     }
 
     fun play(context: Context, video: BotVideo) {
+        val requestGeneration = playbackRequestGeneration.issue()
         io.execute {
             resolveVideoFile(context.applicationContext, video) { resolved ->
                 mainHandler.post {
+                    if (!playbackRequestGeneration.isCurrent(requestGeneration)) return@post
                     if (ready && !isMessageBlocked(resolved.chatId, resolved.messageId)) {
                         StreamPlayback.playBot(context, resolved)
                     }
                 }
             }
         }
+    }
+
+    /** Invalidate pending media resolution when the user stops or switches playback sources. */
+    internal fun cancelPendingPlayback() {
+        playbackRequestGeneration.invalidate()
     }
 
     /** Resolve an inbox item before opening it in a compatible external video app. */

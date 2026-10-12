@@ -2,21 +2,25 @@ package io.github.polarfox0317.sikboonge.ui.components
 
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.input.TextFieldLineLimits
+import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.ImeAction
-import io.github.polarfox0317.sikboonge.BotVideoTitlePolicy
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.style.LineBreak
 
 @Composable
 internal fun ConfirmDeleteDialog(
@@ -44,44 +48,56 @@ internal fun ConfirmDeleteDialog(
     )
 }
 
-/** maxLength is the Bot title policy for videos; library names retain their extension. */
 @Composable
 internal fun RenameDialog(
     initial: String,
-    maxLength: Int,
     onConfirm: (String) -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
     bot: Boolean = true,
     extension: String = "",
 ) {
-    var draft by rememberSaveable(initial, bot, extension) { mutableStateOf(initial) }
+    val draftState = rememberSaveable(initial, bot, extension, saver = TextFieldState.Saver) { TextFieldState(initial) }
+    var botDraft by rememberSaveable(initial, bot, extension, stateSaver = TextFieldValue.Saver) {
+        mutableStateOf(TextFieldValue(initial))
+    }
+    val draft = if (bot) botDraft.text else draftState.text.toString()
     val title = if (bot) draft.filterNot { Character.isISOControl(it) }.trim() else {
         val entered = draft.trim().trim('.')
         if (extension.isNotBlank() && entered.endsWith(".$extension", ignoreCase = true)) entered.dropLast(extension.length + 1) else entered
     }
-    val tooLong = title.length > maxLength
-    val valid = title.isNotBlank() && !tooLong && title != initial
+    val valid = title.isNotBlank() && title != initial
     val prefix = if (bot) "botRename" else "libraryRename"
     AlertDialog(
         onDismissRequest = onDismiss,
         modifier = modifier.testTag(prefix + "Dialog"),
         title = { Text(if (bot) "영상 제목 수정" else "파일 이름 수정") },
         text = {
-            OutlinedTextField(
-                value = draft,
-                onValueChange = { draft = it },
-                label = { Text(if (bot) "영상 제목" else "파일 이름") },
-                singleLine = !bot,
-                minLines = 1,
-                maxLines = if (bot) 4 else 1,
+            if (bot) {
+                // VisualTransformation leaves Foundation's IME, copy/paste and key movement
+                // in the original title. OutputTransformation in Foundation 1.12 exposes
+                // inserted wrapping characters to those paths, so it is unsuitable here.
+                OutlinedTextField(
+                    value = botDraft,
+                    onValueChange = { botDraft = it },
+                    label = { Text("영상 제목") },
+                    minLines = 1,
+                    maxLines = 4,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    textStyle = LocalTextStyle.current.copy(
+                        lineBreak = LineBreak.Simple.copy(strictness = LineBreak.Strictness.Loose),
+                    ),
+                    visualTransformation = GraphemeWrapVisualTransformation,
+                    supportingText = { if (title.isBlank()) Text("제목을 입력해 주세요.") },
+                    modifier = Modifier.fillMaxWidth().testTag(prefix + "Title"),
+                )
+            } else EdgeHoldOutlinedTextField(
+                state = draftState,
+                label = { Text("파일 이름") },
+                lineLimits = TextFieldLineLimits.SingleLine,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                 supportingText = {
-                    when {
-                        bot && title.isBlank() -> Text("제목을 입력해 주세요.")
-                        bot && tooLong -> Text("제목은 ${BotVideoTitlePolicy.MAX_TITLE_CHARS}자 이하로 입력해 주세요.")
-                        !bot && extension.isNotBlank() -> Text(".$extension 확장자는 유지돼요.")
-                    }
+                    if (extension.isNotBlank()) Text(".$extension 확장자는 유지돼요.")
                 },
                 modifier = Modifier.fillMaxWidth().testTag(prefix + "Title"),
             )

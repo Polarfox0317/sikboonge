@@ -41,12 +41,13 @@
 - 출력 형식을 선택하려면 앱 메뉴에서 **설정**을 열고 오디오 저장 형식에서 **Original**, **WAV**, **MP3** 중 하나를 선택합니다.
 - 기기의 영상을 변환하려면 **변환**을 열어 영상을 선택한 다음 **오디오 추출**을 누릅니다. 전역 형식 설정이 적용됩니다.
 - Telegram 영상을 사용하려면 설정한 봇에 영상을 전달합니다. **봇**에서 재생하거나 전역 형식으로 오디오를 저장할 수 있습니다.
+- 보관함에서 재생할 파일 하나를 선택해 바로 재생하거나, 여러 파일을 재생목록에 추가해 차례로 들을 수 있습니다.
 - 다른 앱에서 로컬 영상을 공유하면 영상이 선택된 상태로 변환 탭이 열립니다.
 - 저장 결과는 **보관함**에서 확인하고 재생, 공유 또는 복사본 내보내기를 할 수 있습니다.
 
 ## 소스에서 빌드
 
-1.1.0 릴리스 버전은 `1.1.0`(version code `125`)입니다. 기본 앱의 release application ID는 `io.github.polarfox0317.sikboonge`이며 기기에서 `Sikboonge`로 표시됩니다. 공개 소스의 debug 앱은 별도 APK와 application ID `io.github.polarfox0317.sikboonge.debug`를 사용하고 한국어 환경에서 `싴붕이 · 개발용`으로 표시됩니다. 공개 소스의 release와 debug 앱은 모두 일반 `MainActivity`를 엽니다. 로컬 검토용 화면과 더미 미디어는 공개 소스에서 제외합니다. 최소 Android 버전은 8.0(API 26), Android Gradle Plugin은 `9.2.1`, Gradle wrapper는 `9.4.1`, Android SDK compile level은 `37`입니다. 대상 ABI는 `arm64-v8a`와 `x86_64`입니다.
+기본 앱의 release application ID는 `io.github.polarfox0317.sikboonge`이며 기기에서 `Sikboonge`로 표시됩니다. 공개 소스의 debug 앱은 별도 APK와 application ID `io.github.polarfox0317.sikboonge.debug`를 사용하고 한국어 환경에서 `싴붕이 · 개발용`으로 표시됩니다. 공개 소스의 release와 debug 앱은 모두 일반 `MainActivity`를 엽니다. 로컬 검토용 화면과 더미 미디어는 공개 소스에서 제외합니다. 최소 Android 버전은 8.0(API 26), Android Gradle Plugin은 `9.2.1`, Gradle wrapper는 `9.4.1`, Android SDK compile level은 `37`입니다. 대상 ABI는 `arm64-v8a`와 `x86_64`입니다.
 
 JDK 17 이상과 API 37 SDK Platform 및 빌드 도구가 설치된 Android SDK가 필요합니다. PowerShell에서 저장소 루트로 이동해 release 앱과 debug 개발용 앱을 각각 빌드합니다.
 

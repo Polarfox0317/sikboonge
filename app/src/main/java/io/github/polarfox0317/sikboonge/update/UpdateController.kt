@@ -66,7 +66,13 @@ internal object UpdateController {
     private const val KEY_AUTO_CHECK = "auto_check_on_startup"
     private const val KEY_SKIPPED_VERSION = "skipped_auto_prompt_version"
     private const val KEY_LAST_SEEN_CHANGELOG_VERSION_CODE = "last_seen_changelog_version_code"
+    private const val KEY_STAGED_APK_VERSION = "staged_apk_version"
+    private const val KEY_STAGED_APK_TAG_NAME = "staged_apk_tag_name"
+    private const val KEY_STAGED_APK_VERSION_CODE = "staged_apk_version_code"
+    private const val KEY_AWAITING_ACTIVITY_RESULT = "awaiting_activity_result"
     private const val APK_MIME_TYPE = "application/vnd.android.package-archive"
+    private const val APK_UPDATES_DIRECTORY = "apk_updates"
+    private const val APK_UPDATE_FILE_NAME = "sikboonge-update.apk"
     private const val CONNECT_TIMEOUT_MS = 15_000
     private const val READ_TIMEOUT_MS = 30_000
     private const val BUFFER_SIZE = 64 * 1024
@@ -89,6 +95,7 @@ internal object UpdateController {
     private var awaitingActivityResult: ActivityLaunchKind? = null
     private var checkJob: Job? = null
     private var downloadJob: Job? = null
+    private var stagedInstallJob: Job? = null
     private val downloadLock = Any()
     private var downloadGeneration = 0L
     private var lastUpdateNotificationAtNanos = 0L
@@ -103,6 +110,7 @@ internal object UpdateController {
             appContext = app
             _autoCheckEnabled.value = preferences(app).getBoolean(KEY_AUTO_CHECK, true)
             _pendingChangelog.value = pendingChangelogFor(app)
+            restoreStagedUpdateState(app)
         }
     }
 
@@ -247,13 +255,18 @@ internal object UpdateController {
 
     fun cancelDownload() {
         val current = _status.value as? UpdateStatus.Downloading ?: return
+        stagedInstallJob?.cancel()
+        stagedInstallJob = null
         synchronized(downloadLock) {
             downloadGeneration += 1L
             downloadJob?.cancel()
             downloadJob = null
             contextOrNull()?.let { context -> runCatching { UpdateDownloadService.clear(context) } }
         }
+        contextOrNull()?.let { clearStagedUpdate(it, deleteApk = true) }
         verifiedApk = null
+        pendingRelease = null
+        expectedInstalledVersionCode = 0L
         val installedName = contextOrNull()?.let { context ->
             runCatching { getAppPackageInfo(context, context.packageName).versionName.orEmpty() }
                 .getOrDefault("")
@@ -268,8 +281,8 @@ internal object UpdateController {
     fun retry() {
         val current = _status.value as? UpdateStatus.Failed ?: return
         if (verifiedApk?.isFile == true && pendingRelease != null) {
-            requestSystemInstall()
-        } else if (current.release != null) {
+            installDownloadedUpdateFromNotification()
+        } else if (current.release?.apk != null) {
             startDownload(current.release)
         } else {
             checkManually()
@@ -293,8 +306,12 @@ internal object UpdateController {
             lastUpdateNotificationAtNanos = 0L
             downloadGeneration
         }
+        stagedInstallJob?.cancel()
+        stagedInstallJob = null
+        clearStagedUpdate(context, deleteApk = true)
         verifiedApk = null
         pendingRelease = release
+        expectedInstalledVersionCode = 0L
         _status.value = UpdateStatus.Downloading(release, 0L, asset.sizeBytes)
         try {
             UpdateDownloadService.start(context)
@@ -334,14 +351,24 @@ internal object UpdateController {
                     readArchiveVersionCode(context, verified)
                 } ?: 0L
                 currentCoroutineContext().ensureActive()
-                synchronized(downloadLock) {
-                    if (generation != downloadGeneration) return@synchronized
-                    verifiedApk = verified
-                    expectedInstalledVersionCode = versionCode
-                    runCatching { UpdateDownloadService.showCompleted(context, release.version) }
-                    _status.value = UpdateStatus.PreparingInstall(release)
+                val readyForInstall = synchronized(downloadLock) {
+                    if (generation != downloadGeneration) {
+                        false
+                    } else if (!persistStagedUpdate(context, release, versionCode)) {
+                        _status.value = UpdateStatus.Failed(
+                            "다운로드한 APK 정보를 저장하지 못했어요. 다시 다운로드해 주세요.",
+                            release,
+                        )
+                        false
+                    } else {
+                        verifiedApk = verified
+                        expectedInstalledVersionCode = versionCode
+                        runCatching { UpdateDownloadService.showCompleted(context, release.version) }
+                        _status.value = UpdateStatus.PreparingInstall(release)
+                        true
+                    }
                 }
-                if (generation == synchronized(downloadLock) { downloadGeneration }) requestSystemInstall()
+                if (readyForInstall) requestSystemInstall()
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
@@ -386,6 +413,12 @@ internal object UpdateController {
         queueActivityLaunch(ActivityLaunchKind.Installer)
     }
 
+    /** Revalidates the staged APK after a completion-notification tap or a permission return. */
+    fun installDownloadedUpdateFromNotification() {
+        val context = contextOrNull() ?: return
+        prepareStagedInstall(context, supersedeAwaitingResult = true)
+    }
+
     fun activityIntent(request: UpdateActivityLaunchRequest): Intent {
         val context = requireNotNull(contextOrNull()) { "UpdateController is not initialized" }
         return when (request.kind) {
@@ -411,11 +444,17 @@ internal object UpdateController {
     fun markActivityLaunchDispatched(request: UpdateActivityLaunchRequest) {
         if (_activityLaunch.value?.id != request.id) return
         awaitingActivityResult = request.kind
+        contextOrNull()?.let { context ->
+            preferences(context).edit()
+                .putString(KEY_AWAITING_ACTIVITY_RESULT, request.kind.name)
+                .commit()
+        }
         _activityLaunch.value = null
     }
 
     fun onActivityLaunchFailed(request: UpdateActivityLaunchRequest) {
         awaitingActivityResult = null
+        contextOrNull()?.let(::clearAwaitingActivityResult)
         _activityLaunch.value = null
         _status.value = UpdateStatus.Failed(
             if (request.kind == ActivityLaunchKind.UnknownSourcesSettings) {
@@ -429,11 +468,13 @@ internal object UpdateController {
 
     fun onSystemActivityResult() {
         val context = contextOrNull() ?: return
-        when (awaitingActivityResult) {
+        val completedKind = awaitingActivityResult ?: return
+        awaitingActivityResult = null
+        clearAwaitingActivityResult(context)
+        when (completedKind) {
             ActivityLaunchKind.UnknownSourcesSettings -> {
-                awaitingActivityResult = null
                 if (runCatching { context.packageManager.canRequestPackageInstalls() }.getOrDefault(false)) {
-                    requestSystemInstall()
+                    continueStagedInstallAfterActivityResult()
                 } else {
                     _status.value = UpdateStatus.Failed(
                         "설정에서 이 앱의 APK 설치를 허용한 뒤 다시 시도해 주세요.",
@@ -442,12 +483,15 @@ internal object UpdateController {
                 }
             }
             ActivityLaunchKind.Installer -> {
-                awaitingActivityResult = null
                 val installedVersion = runCatching {
                     packageVersionCode(getAppPackageInfo(context, context.packageName))
                 }.getOrDefault(0L)
                 if (expectedInstalledVersionCode > 0L && installedVersion >= expectedInstalledVersionCode) {
                     _status.value = UpdateStatus.UpToDate
+                    clearStagedUpdate(context, deleteApk = true)
+                    pendingRelease = null
+                    verifiedApk = null
+                    expectedInstalledVersionCode = 0L
                 } else {
                     _status.value = UpdateStatus.Failed(
                         "설치가 취소되었거나 완료되지 않았어요. 설치 화면에서 확인해 주세요.",
@@ -455,7 +499,57 @@ internal object UpdateController {
                     )
                 }
             }
-            null -> Unit
+        }
+    }
+
+    private fun continueStagedInstallAfterActivityResult() {
+        val context = contextOrNull() ?: return
+        prepareStagedInstall(context, supersedeAwaitingResult = false)
+    }
+
+    private fun prepareStagedInstall(context: Context, supersedeAwaitingResult: Boolean) {
+        if (stagedInstallJob?.isActive == true || _activityLaunch.value != null) return
+        if (awaitingActivityResult != null) {
+            if (!supersedeAwaitingResult) return
+            awaitingActivityResult = null
+            clearAwaitingActivityResult(context)
+        }
+        val release = pendingRelease
+        val apk = verifiedApk ?: stagedApkFile(context)
+        val expectedVersionCode = expectedInstalledVersionCode
+        if (release == null || expectedVersionCode <= 0L) {
+            _status.value = UpdateStatus.Failed(
+                "확인된 업데이트 APK를 찾지 못했어요. 설정에서 업데이트를 다시 확인해 주세요.",
+            )
+            return
+        }
+        stagedInstallJob = processScope.launch {
+            val verificationError = withContext(Dispatchers.IO) {
+                when {
+                    !apk.isFile -> "APK 파일을 찾지 못했어요. 다시 다운로드해 주세요."
+                    else -> verifyApk(context, apk) ?: run {
+                        val archiveVersionCode = readArchiveVersionCode(context, apk)
+                        if (archiveVersionCode == null || archiveVersionCode != expectedVersionCode) {
+                            "다운로드한 APK 버전 확인에 실패했어요. 다시 다운로드해 주세요."
+                        } else {
+                            null
+                        }
+                    }
+                }
+            }
+            if (verificationError != null) {
+                clearStagedUpdate(context, deleteApk = true)
+                verifiedApk = null
+                pendingRelease = null
+                expectedInstalledVersionCode = 0L
+                _status.value = UpdateStatus.Failed(verificationError, release)
+                return@launch
+            }
+            verifiedApk = apk
+            pendingRelease = release
+            requestSystemInstall()
+        }.also { job ->
+            job.invokeOnCompletion { if (stagedInstallJob === job) stagedInstallJob = null }
         }
     }
 
@@ -552,9 +646,9 @@ internal object UpdateController {
         if (!asset.downloadUrl.startsWith("https://", ignoreCase = true)) {
             throw IOException("APK download URL must use HTTPS")
         }
-        val directory = File(context.cacheDir, "apk_updates").apply { mkdirs() }
-        val destination = File(directory, "sikboonge-update.apk")
-        val temporary = File(directory, "sikboonge-update.apk.part")
+        val directory = File(context.cacheDir, APK_UPDATES_DIRECTORY).apply { mkdirs() }
+        val destination = File(directory, APK_UPDATE_FILE_NAME)
+        val temporary = File(directory, "$APK_UPDATE_FILE_NAME.part")
         val connection = (URL(asset.downloadUrl).openConnection() as HttpsURLConnection).apply {
             connectTimeout = CONNECT_TIMEOUT_MS
             readTimeout = READ_TIMEOUT_MS
@@ -609,6 +703,69 @@ internal object UpdateController {
 
     private fun preferences(context: Context) =
         context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+
+    private fun restoreStagedUpdateState(context: Context) {
+        val prefs = preferences(context)
+        awaitingActivityResult = prefs.getString(KEY_AWAITING_ACTIVITY_RESULT, null)
+            ?.let { name -> runCatching { ActivityLaunchKind.valueOf(name) }.getOrNull() }
+
+        val version = prefs.getString(KEY_STAGED_APK_VERSION, null)
+        val tagName = prefs.getString(KEY_STAGED_APK_TAG_NAME, null)
+        val versionCode = prefs.getLong(KEY_STAGED_APK_VERSION_CODE, 0L)
+        if (version.isNullOrBlank() || versionCode <= 0L) {
+            pendingRelease = null
+            verifiedApk = null
+            expectedInstalledVersionCode = 0L
+            clearStagedUpdate(context, deleteApk = false)
+            return
+        }
+
+        pendingRelease = AppRelease(
+            tagName = tagName?.takeIf(String::isNotBlank) ?: "v$version",
+            version = version,
+            title = "sikboonge $version",
+            notes = "",
+            apk = null,
+        )
+        verifiedApk = stagedApkFile(context).takeIf(File::isFile)
+        expectedInstalledVersionCode = versionCode
+        val installedVersionCode = runCatching {
+            packageVersionCode(getAppPackageInfo(context, context.packageName))
+        }.getOrDefault(0L)
+        if (installedVersionCode >= versionCode) {
+            clearStagedUpdate(context, deleteApk = true)
+            clearAwaitingActivityResult(context)
+            awaitingActivityResult = null
+            pendingRelease = null
+            verifiedApk = null
+            expectedInstalledVersionCode = 0L
+        }
+    }
+
+    private fun persistStagedUpdate(context: Context, release: AppRelease, versionCode: Long): Boolean {
+        if (versionCode <= 0L) return false
+        return preferences(context).edit()
+            .putString(KEY_STAGED_APK_VERSION, release.version)
+            .putString(KEY_STAGED_APK_TAG_NAME, release.tagName)
+            .putLong(KEY_STAGED_APK_VERSION_CODE, versionCode)
+            .commit()
+    }
+
+    private fun clearStagedUpdate(context: Context, deleteApk: Boolean) {
+        preferences(context).edit()
+            .remove(KEY_STAGED_APK_VERSION)
+            .remove(KEY_STAGED_APK_TAG_NAME)
+            .remove(KEY_STAGED_APK_VERSION_CODE)
+            .commit()
+        if (deleteApk) stagedApkFile(context).delete()
+    }
+
+    private fun clearAwaitingActivityResult(context: Context) {
+        preferences(context).edit().remove(KEY_AWAITING_ACTIVITY_RESULT).commit()
+    }
+
+    private fun stagedApkFile(context: Context): File =
+        File(File(context.cacheDir, APK_UPDATES_DIRECTORY), APK_UPDATE_FILE_NAME)
 
     private fun contextOrNull(): Context? = appContext
 }

@@ -54,7 +54,6 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import io.github.polarfox0317.sikboonge.BotUiState
 import io.github.polarfox0317.sikboonge.BotVideoThumbnail
-import io.github.polarfox0317.sikboonge.BotVideoTitlePolicy
 import io.github.polarfox0317.sikboonge.R
 import io.github.polarfox0317.sikboonge.TRANSIENT_FEEDBACK_TIMEOUT_MS
 import io.github.polarfox0317.sikboonge.UserFacingErrors
@@ -130,7 +129,6 @@ internal fun BotScreen(
     state.bot.videos.firstOrNull { it.messageId == editingMessageId }?.let { video ->
         RenameDialog(
             initial = video.displayName,
-            maxLength = BotVideoTitlePolicy.MAX_TITLE_CHARS,
             onConfirm = { actions.onRenameBotVideo(video, it); editingMessageId = null },
             onDismiss = { editingMessageId = null },
         )

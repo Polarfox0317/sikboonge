@@ -28,6 +28,16 @@ class BundledChangelogTest {
     }
 
     @Test
+    fun upgradedBuild132HasOfflineNotesUntilAcknowledgedAndKeeps125Available() {
+        val pending = pendingBundledChangelog(132L, 125L, isUpdatedInstall = true)
+        assertNotNull(pending)
+        assertEquals(bundledChangelog(132L), pending)
+        assertNotNull(pendingBundledChangelog(132L, 131L, isUpdatedInstall = true))
+        assertNull(pendingBundledChangelog(132L, 132L, isUpdatedInstall = true))
+        assertNotNull(bundledChangelog(125L, "en-US"))
+    }
+
+    @Test
     fun acknowledgedOrNewerSeenCodeDoesNotShowAgain() {
         assertNull(pendingBundledChangelog(125L, 125L, isUpdatedInstall = false))
         assertNull(pendingBundledChangelog(125L, 126L, isUpdatedInstall = true))
@@ -61,6 +71,27 @@ class BundledChangelogTest {
     fun otherLocalesUseTheExistingKoreanFallback() {
         assertEquals(bundledChangelog(125L, "ko"), bundledChangelog(125L, "fr"))
         assertEquals(bundledChangelog(125L, "ko"), bundledChangelog(125L))
+    }
+
+    @Test
+    fun build132UsesApprovedKoreanAndEnglishPlaybackAndEditingCategories() {
+        val korean = requireNotNull(bundledChangelog(132L, "ko-KR"))
+        assertEquals(
+            listOf("재생 기능 개선", "제목 편집 개선", "버그 수정"),
+            korean.filterIsInstance<ReleaseNoteBlock.Heading>().map { it.text },
+        )
+        assertEquals(8, korean.filterIsInstance<ReleaseNoteBlock.Item>().size)
+        assertTrue(korean.any { it is ReleaseNoteBlock.Item && "Android 미디어 컨트롤" in it.text })
+
+        val english = requireNotNull(bundledChangelog(132L, "en-US"))
+        assertEquals(
+            listOf("Playback improvements", "Title editing improvements", "Bug fixes"),
+            english.filterIsInstance<ReleaseNoteBlock.Heading>().map { it.text },
+        )
+        assertEquals(8, english.filterIsInstance<ReleaseNoteBlock.Item>().size)
+        assertTrue(english.any { it is ReleaseNoteBlock.Item && "Android media controls" in it.text })
+        assertTrue(english.filterIsInstance<ReleaseNoteBlock.Item>().none { "재생" in it.text })
+        assertEquals(korean, bundledChangelog(132L, "fr"))
     }
 
     @Test

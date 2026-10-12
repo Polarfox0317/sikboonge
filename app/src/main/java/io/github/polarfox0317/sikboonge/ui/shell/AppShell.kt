@@ -176,7 +176,7 @@ internal fun AppShell(
         if (tier == WindowTier.Expanded && expandedRailPreference) railState.expand()
         else railState.collapse()
     }
-    val playerVisible = state.stream.isPlayerVisible()
+    val playerVisible = state.emptyPlayerVisible || state.stream.isPlayerVisible()
     val miniReserve = if (playerVisible && !state.playerExpanded) MiniPlayerContentHeight else 0.dp
     val selectionReserve = if (state.selectionMode) SelectionToolbarContentHeight else 0.dp
     val messages = rememberShellMessages(controller, state)

@@ -41,12 +41,13 @@ Treat the token and `api_hash` as secrets. The app encrypts the saved credential
 - To choose the output format, open **Settings** from the app menu and select **Original**, **WAV**, or **MP3** under audio save format.
 - To convert a video on your device, open **Convert**, choose the video, then tap **Extract audio**. The global format setting is applied.
 - To use a Telegram video, forward it to your configured bot. Play it from **Bot** or save its audio in the globally selected format.
+- In **Library**, select one file to play it immediately, or add several files to a playlist for sequential listening.
 - Share a local video from another app to open it in Convert with the file selected.
 - Find saved results in **Library**. From there, play, share, or export a copy.
 
 ## Build from source
 
-Release source version: app version `1.1.0` (version code `125`), release application ID `io.github.polarfox0317.sikboonge`, minimum Android version 8.0 (API 26), Android Gradle Plugin `9.2.1`, Gradle wrapper `9.4.1`, and Android SDK compile level `37`. The project targets 64-bit `arm64-v8a` and `x86_64` devices.
+The release application ID is `io.github.polarfox0317.sikboonge`, the minimum Android version is 8.0 (API 26), Android Gradle Plugin `9.2.1`, Gradle wrapper `9.4.1`, and Android SDK compile level `37`. The project targets 64-bit `arm64-v8a` and `x86_64` devices.
 
 You need a JDK 17 or newer and an Android SDK installation with the SDK Platform and build tools for API 37. From the repository root in PowerShell, build the release app and the separate debug development app with the checked-in Gradle wrapper:
 

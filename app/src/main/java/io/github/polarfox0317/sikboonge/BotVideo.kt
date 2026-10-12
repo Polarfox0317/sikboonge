@@ -25,12 +25,9 @@ data class BotVideo(
 }
 
 internal object BotVideoTitlePolicy {
-    const val MAX_TITLE_CHARS = 120
-
     /** Blank input clears a custom title; control characters are removed before persistence. */
     fun normalize(value: String): String? {
         val title = value.filterNot { Character.isISOControl(it) }.trim()
-        require(title.length <= MAX_TITLE_CHARS) { "제목은 ${MAX_TITLE_CHARS}자 이하로 입력해 주세요." }
         return title.takeIf(String::isNotBlank)
     }
 }

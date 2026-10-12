@@ -64,8 +64,8 @@ internal fun UpdateAvailableDialog(
 internal fun UpdateCompletedDialog(changelog: AppChangelog, onDismiss: () -> Unit) {
     val isEnglish = LocalConfiguration.current.locales[0]?.language?.startsWith("en") == true
     val blocks = when {
-        changelog.versionCode == 125L -> bundledChangelog(125L, if (isEnglish) "en" else "ko")
-            ?: changelog.notes
+        changelog.versionCode in setOf(125L, 132L) ->
+            bundledChangelog(changelog.versionCode, if (isEnglish) "en" else "ko") ?: changelog.notes
         isEnglish && changelog.versionCode in setOf(109L, 110L) -> listOf(
             ReleaseNoteBlock.Item(stringResource(R.string.changelog_note_connected_search)),
             ReleaseNoteBlock.Item(stringResource(R.string.changelog_note_offline_list)),

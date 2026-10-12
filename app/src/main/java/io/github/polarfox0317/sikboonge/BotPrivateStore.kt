@@ -156,7 +156,7 @@ internal class BotPrivateStore(
                 thumbnailFileId = row.optInt("thumb_id", 0).coerceAtLeast(0),
                 thumbnailBase64 = row.optString("thumb_mini", "").take(MAX_MINI_BASE64_CHARS),
                 thumbnailPath = row.optString("thumb_path", "").takeIf(String::isNotBlank)?.take(2048),
-                customTitle = row.optString("custom_title", "").take(BotVideoTitlePolicy.MAX_TITLE_CHARS).takeIf(String::isNotBlank),
+                customTitle = row.optString("custom_title", "").takeIf(String::isNotBlank),
                 tags = TagPolicy.normalizeTags(row.optJSONArray("tags")?.let { tags -> (0 until tags.length()).mapNotNull { tags.optString(it, null) } }.orEmpty()),
             )
         } }.takeLast(MAX_VIDEOS)
@@ -187,7 +187,7 @@ internal class BotPrivateStore(
                 .put("remote", video.remoteFileId).put("mime", video.mimeType.take(128))
                 .put("thumb_remote", video.thumbnailRemoteFileId.take(512)).put("thumb_id", video.thumbnailFileId.coerceAtLeast(0))
                 .put("thumb_mini", video.thumbnailBase64.take(MAX_MINI_BASE64_CHARS)).put("thumb_path", video.thumbnailPath.orEmpty().take(2048))
-                .put("custom_title", video.customTitle.orEmpty().take(BotVideoTitlePolicy.MAX_TITLE_CHARS))
+                .put("custom_title", video.customTitle.orEmpty())
                 .put("tags", JSONArray(TagPolicy.normalizeTags(video.tags))))
             }
         }

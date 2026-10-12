@@ -18,6 +18,7 @@ import io.github.polarfox0317.sikboonge.ui.state.AppController
 import io.github.polarfox0317.sikboonge.ui.state.AppControllerFactory
 import io.github.polarfox0317.sikboonge.ui.state.Destination
 import io.github.polarfox0317.sikboonge.ui.welcome.WelcomePreferences
+import io.github.polarfox0317.sikboonge.update.UpdateController
 
 class MainActivity : ComponentActivity() {
     private lateinit var controller: AppController
@@ -35,6 +36,7 @@ class MainActivity : ComponentActivity() {
         } else {
             false
         }
+        UpdateController.initialize(applicationContext)
         enableEdgeToEdge()
         if (Build.VERSION.SDK_INT >= 29) window.isNavigationBarContrastEnforced = false
         AppStore.load(this)
@@ -94,6 +96,10 @@ class MainActivity : ComponentActivity() {
             incomingEventToken++
         }
         if (intent.getBooleanExtra("open_library", false)) openLibraryEventToken++
-        if (intent.getBooleanExtra("open_update", false)) openUpdateEventToken++
+        if (intent.getBooleanExtra("open_update", false)) {
+            openUpdateEventToken++
+            intent.removeExtra("open_update")
+            UpdateController.installDownloadedUpdateFromNotification()
+        }
     }
 }

@@ -10,6 +10,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.input.clearText
+import androidx.compose.foundation.text.input.rememberTextFieldState
+import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ButtonGroup
 import androidx.compose.material3.ButtonGroupDefaults
@@ -26,7 +29,6 @@ import androidx.compose.material3.MenuDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.SearchBar
-import androidx.compose.material3.SearchBarDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.ToggleButton
 import androidx.compose.material3.ToggleButtonDefaults
@@ -35,10 +37,13 @@ import androidx.compose.material3.TooltipBox
 import androidx.compose.material3.TooltipDefaults
 import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -70,24 +75,49 @@ internal fun ListControls(
     tagVocabulary: List<String> = emptyList(),
 ) {
     val keyboardController = LocalSoftwareKeyboardController.current
+    val searchState = rememberTextFieldState(initialText = query.text)
+    val pendingSearchEchoes = remember(searchState) { LinkedHashSet<String>() }
+    val latestQuery by rememberUpdatedState(query)
+    val latestOnQueryChange by rememberUpdatedState(onQueryChange)
+    LaunchedEffect(query.text) {
+        // Even an older echo arriving after another IME edit must not replace the
+        // editor's newer text, selection, or composing region.
+        val ownEcho = pendingSearchEchoes.remove(query.text)
+        if (ownEcho) {
+            if (searchState.text.toString() == query.text) pendingSearchEchoes.clear()
+        } else if (searchState.text.toString() != query.text) {
+            pendingSearchEchoes.clear()
+            searchState.setTextAndPlaceCursorAtEnd(query.text)
+        }
+    }
+    LaunchedEffect(searchState) {
+        snapshotFlow { searchState.text.toString() }.collect { text ->
+            if (latestQuery.text != text) {
+                pendingSearchEchoes.add(text)
+                // Parent state can conflate intermediate values; keep this history bounded.
+                if (pendingSearchEchoes.size > 32) pendingSearchEchoes.remove(pendingSearchEchoes.first())
+                latestOnQueryChange(latestQuery.copy(text = text))
+            }
+        }
+    }
     Column(modifier, verticalArrangement = Arrangement.spacedBy(AppDimens.itemSpacing)) {
         SearchBar(
             inputField = {
-                SearchBarDefaults.InputField(
-                    query = query.text,
-                    onQueryChange = { onQueryChange(query.copy(text = it)) },
+                EdgeHoldSearchInputField(
+                    state = searchState,
                     onSearch = { keyboardController?.hide() },
-                    expanded = false,
-                    onExpandedChange = {},
                     modifier = Modifier.fillMaxWidth().testTag("${tagPrefix}Search"),
                     placeholder = { Text(placeholder) },
                     leadingIcon = {
                         Icon(painterResource(R.drawable.ic_search), contentDescription = null)
                     },
-                    trailingIcon = if (query.text.isNotEmpty()) {
+                    trailingIcon = if (searchState.text.isNotEmpty()) {
                         {
                             ListControlTooltip("검색어 지우기") {
-                                IconButton(onClick = { onQueryChange(query.copy(text = "")) }) {
+                                IconButton(onClick = {
+                                    searchState.clearText()
+                                    onQueryChange(query.copy(text = ""))
+                                }) {
                                     Icon(painterResource(R.drawable.ic_close), contentDescription = "검색어 지우기")
                                 }
                             }

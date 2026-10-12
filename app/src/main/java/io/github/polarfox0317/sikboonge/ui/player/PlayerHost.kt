@@ -67,9 +67,9 @@ internal fun PlayerHost(
 ) {
     val stream = state.stream
     // Same source/active visibility gate as the old Activity, including local-source restoration.
-    val visible = stream.source != PlaybackSource.NONE &&
+    val visible = state.emptyPlayerVisible || (stream.source != PlaybackSource.NONE &&
         (stream.resolving || stream.ready || stream.error != null || stream.playing ||
-            stream.buffering || stream.localAudioPath != null)
+            stream.buffering || stream.localAudioPath != null))
     if (!visible) {
         if (state.queueVisible) PlayerQueueSheet(state, actions)
         return
@@ -192,6 +192,7 @@ internal fun PlayerHost(
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun MiniPlayer(stream: StreamingState, actions: AppActions, modifier: Modifier = Modifier) {
+    val empty = stream.source == PlaybackSource.NONE
     Column(modifier.fillMaxSize()) {
         Row(
             Modifier.weight(1f).fillMaxWidth()
@@ -213,7 +214,7 @@ private fun MiniPlayer(stream: StreamingState, actions: AppActions, modifier: Mo
             ) {
                 Spacer(Modifier.width(MiniArtworkSize + AppDimens.itemSpacing))
                 Text(
-                    stream.title, modifier = Modifier.weight(1f),
+                    if (empty) "오디오 없음" else stream.title, modifier = Modifier.weight(1f),
                     style = MaterialTheme.typography.titleMedium,
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
@@ -280,13 +281,15 @@ private fun ExpandedPlayer(
         }
     }
     val stream = state.stream
+    val empty = stream.source == PlaybackSource.NONE
     val canSave = stream.source == PlaybackSource.BOT
     val currentPlayerSourceKey = playerSourceKey(stream)
     val matchingBotDownload = state.downloads.firstOrNull { it.sourceBotFileId == stream.botFileId }
     val saving = state.preparingPlayerSaveSourceKey == currentPlayerSourceKey || matchingBotDownload != null
     val saveProgressText = matchingBotDownload?.let(::libraryDownloadProgressText)
     Column(
-        modifier.fillMaxSize().padding(AppDimens.itemSpacing),
+        modifier.fillMaxSize().padding(AppDimens.itemSpacing)
+            .then(if (empty) Modifier.testTag("streamEmptyPlayer") else Modifier),
         verticalArrangement = Arrangement.spacedBy(AppDimens.selectionBadgeInset),
     ) {
         Row(
@@ -295,7 +298,7 @@ private fun ExpandedPlayer(
         ) {
             PlayerIconAction("플레이어 접기", R.drawable.ic_media_minimize,
                 { actions.setPlayerExpanded(false) }, modifier = Modifier.testTag("streamMinimize"))
-            Text(stream.title, style = MaterialTheme.typography.titleMedium,
+            Text(if (empty) "오디오 없음" else stream.title, style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.weight(1f).testTag("streamExpandedHeader"),
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
@@ -308,9 +311,9 @@ private fun ExpandedPlayer(
             verticalArrangement = Arrangement.spacedBy(AppDimens.selectionBadgeInset),
         ) {
             if (compact) Spacer(Modifier.fillMaxWidth().height(artworkSize).then(reportArtworkSlot))
-            Text(stream.title, style = MaterialTheme.typography.headlineSmallEmphasized,
+            Text(if (empty) "재생할 오디오를 선택해 주세요" else stream.title, style = MaterialTheme.typography.headlineSmallEmphasized,
                 maxLines = if (compact) 1 else 2, overflow = TextOverflow.Ellipsis)
-            Text(playerStatus(stream), style = MaterialTheme.typography.bodyMedium,
+            if (!empty) Text(playerStatus(stream), style = MaterialTheme.typography.bodyMedium,
                 modifier = reportStatus,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             stream.error?.let { raw ->
@@ -331,11 +334,11 @@ private fun ExpandedPlayer(
         }
         // Keep seek and transport outside the scrollable artwork/title section in low windows.
         if (stream.error == null && stream.ready) PlayerTimeline(stream, actions, timelineBounds)
-        if (stream.error == null && (stream.resolving || stream.buffering || !stream.ready)) {
+        if (!empty && stream.error == null && (stream.resolving || stream.buffering || !stream.ready)) {
             LoadingIndicator(modifier = Modifier.align(Alignment.CenterHorizontally)
                 .size(LoadingIndicatorDefaults.IndicatorSize).testTag("streamProgress"))
         }
-        if (stream.error == null) PlayerTransportGroup(state, actions)
+        if (!empty && stream.error == null) PlayerTransportGroup(state, actions)
         Row(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.Center,
@@ -349,9 +352,8 @@ private fun ExpandedPlayer(
                     busy = saving, stateDescription = saveProgressText,
                 )
             }
-            PlayerIconAction("다른 앱으로 재생", R.drawable.ic_media_external, actions::onExternalPlayStream,
-                modifier = Modifier.testTag("streamExternalPlay"),
-                enabled = stream.source != PlaybackSource.NONE)
+            if (!empty) PlayerIconAction("다른 앱으로 재생", R.drawable.ic_media_external, actions::onExternalPlayStream,
+                modifier = Modifier.testTag("streamExternalPlay"))
             PlayerIconAction("재생목록", R.drawable.ic_media_queue, actions::onShowQueue,
                 modifier = Modifier.testTag("streamQueue"))
         }

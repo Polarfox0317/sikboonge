@@ -133,7 +133,7 @@ internal fun SettingsScreen(
             modifier = Modifier.fillMaxWidth(),
         )
         SectionCard(
-            title = { Text("봇 영상 저장 방식") },
+            title = { Text("저장 방식") },
             body = {
                 Text(
                     if (state.downloadExecutionMode == DownloadExecutionMode.Sequential) {
@@ -169,6 +169,21 @@ internal fun SettingsScreen(
                         }
                     }
                 }
+            },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        SectionCard(
+            title = { Text("화면 모드") },
+            body = {
+                Text(
+                    "라이트, 다크 또는 기기 설정에 맞춰 표시해요.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                ThemeModeSelector(
+                    selected = themeMode,
+                    onSelect = { ThemeModeStore.set(context, it) },
+                )
             },
             modifier = Modifier.fillMaxWidth(),
         )
@@ -224,21 +239,6 @@ internal fun SettingsScreen(
                         )
                     }
                 }
-            },
-            modifier = Modifier.fillMaxWidth(),
-        )
-        SectionCard(
-            title = { Text("화면 모드") },
-            body = {
-                Text(
-                    "라이트, 다크 또는 기기 설정에 맞춰 표시해요.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                ThemeModeSelector(
-                    selected = themeMode,
-                    onSelect = { ThemeModeStore.set(context, it) },
-                )
             },
             modifier = Modifier.fillMaxWidth(),
         )

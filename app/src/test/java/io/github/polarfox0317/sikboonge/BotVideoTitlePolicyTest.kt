@@ -2,7 +2,6 @@ package io.github.polarfox0317.sikboonge
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class BotVideoTitlePolicyTest {
@@ -20,10 +19,9 @@ class BotVideoTitlePolicyTest {
     }
 
     @Test
-    fun titleLengthIsBoundedBeforePersistence() {
-        assertEquals("x".repeat(BotVideoTitlePolicy.MAX_TITLE_CHARS), BotVideoTitlePolicy.normalize("x".repeat(BotVideoTitlePolicy.MAX_TITLE_CHARS)))
-        val overLimit = runCatching { BotVideoTitlePolicy.normalize("x".repeat(BotVideoTitlePolicy.MAX_TITLE_CHARS + 1)) }
-        assertTrue(overLimit.isFailure)
+    fun normalizationPreservesLongTitles() {
+        val longTitle = "x".repeat(10_000)
+        assertEquals(longTitle, BotVideoTitlePolicy.normalize(longTitle))
     }
 
     @Test

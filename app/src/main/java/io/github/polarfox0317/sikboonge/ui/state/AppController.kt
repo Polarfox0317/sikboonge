@@ -32,6 +32,8 @@ import io.github.polarfox0317.sikboonge.ConversionState
 import io.github.polarfox0317.sikboonge.ExternalPlayback
 import io.github.polarfox0317.sikboonge.LibraryDownload
 import io.github.polarfox0317.sikboonge.PlaybackSource
+import io.github.polarfox0317.sikboonge.PlaybackQueueTransport
+import io.github.polarfox0317.sikboonge.QueueTransportAvailability
 import io.github.polarfox0317.sikboonge.LocalPlaybackPolicy
 import io.github.polarfox0317.sikboonge.StreamPlayback
 import io.github.polarfox0317.sikboonge.StreamingState
@@ -79,6 +81,7 @@ class AppController(
     private var hostEffects: HostEffects? = null
     private var handledIncomingEventToken = 0
     private var lastPlayerSourceKey = sourceKey(StreamPlayback.state.value)
+    private val naturalEndEdge = QueueNaturalEndEdge(StreamPlayback.state.value.ended)
     private var hostWasBound = false
     private var selectedVideoGeneration = 0L
     private var pendingConversionUri: String? = null
@@ -109,6 +112,18 @@ class AppController(
     )
 
     init {
+        PlaybackQueueTransport.bind(
+            owner = this,
+            priority = 0,
+            availability = QueueTransportAvailability(),
+            previous = { onPlayPrevious(); true },
+            next = { onPlayNext(); true },
+        )
+        controllerScope.launch {
+            combine(interaction, StreamPlayback.state) { input, stream ->
+                queueTransportAvailability(input.queue, input.queueIndex, input.queueResumeIndex, stream.positionMs)
+            }.collect { PlaybackQueueTransport.update(this@AppController, it) }
+        }
         controllerScope.launch {
             combine(AppStore.state, AppStore.downloads, botState, StreamPlayback.state) { conversion, downloads, bot, stream ->
                 SavePreparationInputs(conversion, downloads, bot, stream)
@@ -135,32 +150,68 @@ class AppController(
         }
         controllerScope.launch {
             StreamPlayback.state.collect { stream ->
+                val naturalEnd = naturalEndEdge.observe(stream.ended)
+                if (PlaybackQueueTransport.owns(this@AppController) && naturalEnd) {
+                    val input = interaction.value
+                    val key = input.queue.getOrNull(input.queueIndex)?.key
+                    when (val action = queueNaturalEndAction(
+                        input.queue,
+                        key,
+                        endedSourceMatchesCurrent = key != null && queueItemMatches(input.queue[input.queueIndex], stream),
+                    )) {
+                        is QueueNaturalEndAction.PlayNext -> {
+                            playQueueItem(action.index, direction = 1)
+                            return@collect
+                        }
+                        QueueNaturalEndAction.Stop -> {
+                            interaction.update { it.copy(queueIndex = -1, queueResumeIndex = it.queue.size, emptyPlayerVisible = false) }
+                            StreamPlayback.stop()
+                            return@collect
+                        }
+                        null -> Unit
+                    }
+                }
                 val key = sourceKey(stream)
+                val sourceChanged = key != lastPlayerSourceKey
                 val botQueueKey = preservePlayerSizeBotQueueKey
+                val selectedBotQueueKey = botQueueKey?.takeIf { queuedKey ->
+                    sourceChanged && interaction.value.queue.getOrNull(interaction.value.queueIndex)?.key == queuedKey
+                }
                 // TDLib can assign a new file ID while resolving the same queued message.
                 val sameQueuedBotMessage = botQueueKey != null && stream.source == PlaybackSource.BOT &&
-                    botState.value.videos.any { it.fileId == stream.botFileId && queueItem(it).key == botQueueKey }
+                    (botState.value.videos.any { it.fileId == stream.botFileId && queueItem(it).key == botQueueKey } ||
+                        selectedBotQueueKey != null)
                 val keepPlayerSize = key == preservePlayerSizeSourceKey || sameQueuedBotMessage
-                if (keepPlayerSize || key != lastPlayerSourceKey) clearQueuePlaybackPreference()
-                if (key != lastPlayerSourceKey) {
+                if (keepPlayerSize || sourceChanged) clearQueuePlaybackPreference()
+                if (sourceChanged) {
                     lastPlayerSourceKey = key
                     interaction.update { input ->
                         if (key.isEmpty()) input.copy(playerExpanded = true, queueIndex = -1, queueResumeIndex = 0, queueVisible = false, queueEditing = false, queueSelectedKeys = emptySet())
                         else {
-                            val resolvedBotKeys = if (stream.source == PlaybackSource.BOT) botState.value.videos
-                                .filter { it.fileId == stream.botFileId }.mapTo(mutableSetOf()) { queueItem(it).key } else emptySet()
+                            val resolvedBotKeys = if (stream.source == PlaybackSource.BOT) {
+                                botState.value.videos.filter { it.fileId == stream.botFileId }
+                                    .mapTo(mutableSetOf()) { queueItem(it).key }
+                                    .apply { selectedBotQueueKey?.let(::add) }
+                            } else emptySet()
                             val queue = input.queue.map { item ->
                                 if (item.key in resolvedBotKeys) item.copy(botFileId = stream.botFileId) else item
                             }
                             val index = input.queueIndex.takeIf { i -> queue.getOrNull(i)?.let { queueItemMatches(it, stream) } == true }
                                 ?: queue.indexOfFirst { queueItemMatches(it, stream) }
                             val expanded = if (keepPlayerSize) input.playerExpanded else true
-                            if (index >= 0) input.copy(playerExpanded = expanded, queue = queue, queueIndex = index, queueResumeIndex = index)
-                            else {
-                                val item = queueItem(stream)
-                                val at = (if (input.queueIndex >= 0) input.queueIndex + 1 else input.queueResumeIndex).coerceIn(0, queue.size)
-                                input.copy(playerExpanded = expanded, queue = queue.toMutableList().apply { add(at, item) }, queueIndex = at, queueResumeIndex = at)
-                            }
+                            if (index >= 0) input.copy(
+                                playerExpanded = expanded,
+                                emptyPlayerVisible = false,
+                                queue = queue,
+                                queueIndex = index,
+                                queueResumeIndex = index,
+                            ) else input.copy(
+                                playerExpanded = expanded,
+                                emptyPlayerVisible = false,
+                                queue = queue,
+                                queueIndex = -1,
+                                queueResumeIndex = input.queueResumeIndex.coerceIn(0, queue.size),
+                            )
                         }
                     }
                 }
@@ -271,6 +322,7 @@ class AppController(
         putString("settingsLicenseId", (input.settingsPage as? SettingsPage.LicenseDetail)?.id)
         putBoolean("botSetupRequested", input.botSetupRequested)
         putBoolean("playerExpanded", input.playerExpanded)
+        putBoolean("emptyPlayerVisible", input.emptyPlayerVisible)
         putString("playerSourceKey", lastPlayerSourceKey)
         putString("playerSaveSourceKey", input.playerSaveSourceKey)
         putStringArrayList("queueKeys", ArrayList(input.queue.map(QueueItemUi::key)))
@@ -337,6 +389,7 @@ class AppController(
             },
             botSetupRequested = saved.getBoolean("botSetupRequested") && !botState.value.connected,
             playerExpanded = if (sameSource) saved.getBoolean("playerExpanded", true) else true,
+            emptyPlayerVisible = saved.getBoolean("emptyPlayerVisible") && currentSourceKey.isEmpty(),
             playerSaveSourceKey = saved.getString("playerSaveSourceKey").takeIf { AppStore.state.value.running },
             queue = restoredQueue,
             queueIndex = if (currentSourceKey.isNotEmpty()) restoredIndex else -1,
@@ -655,21 +708,25 @@ class AppController(
     }
 
     override fun onPlayAudio(result: AudioResult) {
+        val stream = StreamPlayback.state.value
+        val sameCurrentFile = stream.localAudioPath?.let(::canonicalPath) == canonicalPath(result.path)
+        if (sameCurrentFile && stream.playing) {
+            StreamPlayback.pause()
+            return
+        }
         clearQueuePlaybackPreference()
-        insertAndSelectQueueItem(queueItem(result))
-        playAudio(result, toggleCurrent = true)
+        startFreshQueue(queueItem(result))
+        if (sameCurrentFile && !stream.ended) StreamPlayback.resume() else playAudio(result)
     }
 
-    private fun playAudio(result: AudioResult, toggleCurrent: Boolean = false) {
-        val stream = StreamPlayback.state.value
-        if (!toggleCurrent || stream.localAudioPath?.let(::canonicalPath) != canonicalPath(result.path) || stream.ended) StreamPlayback.playLocal(appContext, result)
-        else if (stream.playing) StreamPlayback.pause() else StreamPlayback.resume()
-    }
+    private fun playAudio(result: AudioResult) = StreamPlayback.playLocal(appContext, result)
 
     override fun onPlayBotVideo(video: BotVideo) {
         if (!canUseBotVideo(video)) return
         clearQueuePlaybackPreference()
-        insertAndSelectQueueItem(queueItem(video))
+        val item = queueItem(video)
+        startFreshQueue(item)
+        preservePlayerSizeBotQueueKey = item.key
         playBotVideo(video)
     }
 
@@ -679,12 +736,16 @@ class AppController(
         return true
     }
 
-    private fun insertAndSelectQueueItem(item: QueueItemUi) {
+    private fun startFreshQueue(item: QueueItemUi) {
+        val playback = queueForPlayback(item)
         interaction.update { input ->
-            val existing = input.queue.indexOfFirst { it.key == item.key }
-            val at = if (existing >= 0) existing else (if (input.queueIndex >= 0) input.queueIndex + 1 else input.queueResumeIndex).coerceIn(0, input.queue.size)
-            val queue = input.queue.toMutableList().apply { if (existing >= 0) set(at, item) else add(at, item) }
-            input.copy(playerExpanded = true, queue = queue, queueIndex = at, queueResumeIndex = at)
+            input.copy(
+                playerExpanded = true,
+                emptyPlayerVisible = false,
+                queue = playback.queue,
+                queueIndex = playback.index,
+                queueResumeIndex = playback.resumeIndex,
+            )
         }
     }
 
@@ -693,8 +754,9 @@ class AppController(
         if (!video.needsForward) appendQueueItem(queueItem(video))
     }
     private fun appendQueueItem(item: QueueItemUi) {
-        val present = interaction.value.queue.any { it.key == item.key }
-        if (!present) interaction.update { it.copy(queue = it.queue + item) }
+        val queue = interaction.value.queue
+        val present = queue.any { it.key == item.key }
+        if (!present) interaction.update { it.copy(queue = appendQueueEntry(it.queue, item)) }
         notice(if (present) "이미 재생목록에 있어요" else "재생목록에 추가했어요")
     }
 
@@ -731,7 +793,15 @@ class AppController(
                     val result = (AppStore.history.value + listOfNotNull(AppStore.state.value.result))
                         .firstOrNull { canonicalPath(it.path) == item.localAudioPath?.let(::canonicalPath) }
                     if (result != null && LocalPlaybackPolicy.ownedAudioFile(appContext.filesDir, result.path) != null) {
-                        interaction.update { it.copy(queueIndex = target, queueResumeIndex = target) }
+                        interaction.update { input ->
+                            val selected = selectQueueEntry(input.queue, target)
+                            input.copy(
+                                emptyPlayerVisible = false,
+                                queue = selected.queue,
+                                queueIndex = selected.index,
+                                queueResumeIndex = selected.resumeIndex,
+                            )
+                        }
                         preservePlayerSizeForQueuePlayback(result)
                         playAudio(result)
                         return
@@ -746,8 +816,15 @@ class AppController(
                     if (video != null && !video.needsForward) {
                         // The same connected/busy guard as a Bot-card play action.
                         if (!canUseBotVideo(video)) return
-                        interaction.update { input -> input.copy(queueIndex = target, queueResumeIndex = target,
-                            queue = input.queue.mapIndexed { i, queued -> if (i == target) queued.copy(botFileId = video.fileId) else queued }) }
+                        interaction.update { input ->
+                            val selected = selectQueueEntry(input.queue, target)
+                            input.copy(
+                                emptyPlayerVisible = false,
+                                queue = selected.queue.mapIndexed { i, queued -> if (i == selected.index) queued.copy(botFileId = video.fileId) else queued },
+                                queueIndex = selected.index,
+                                queueResumeIndex = selected.resumeIndex,
+                            )
+                        }
                         preservePlayerSizeSourceKey = "bot:${video.fileId}"
                         preservePlayerSizeBotQueueKey = queueItem(video).key
                         playBotVideo(video)
@@ -774,10 +851,20 @@ class AppController(
     }
 
     private fun removeQueueItems(keys: Set<String>) {
+        if (keys.isEmpty()) return
+        val current = interaction.value
+        val mutation = removeQueueEntries(current.queue, current.queueIndex, current.queueResumeIndex, keys)
         interaction.update { input ->
-            val removed = removeQueueEntries(input.queue, input.queueIndex, input.queueResumeIndex, keys)
-            input.copy(queue = removed.queue, queueIndex = removed.index, queueResumeIndex = removed.resumeIndex,
+            val updated = if (input.queue == current.queue && input.queueIndex == current.queueIndex && input.queueResumeIndex == current.queueResumeIndex) {
+                mutation
+            } else removeQueueEntries(input.queue, input.queueIndex, input.queueResumeIndex, keys)
+            input.copy(queue = updated.queue, queueIndex = updated.index, queueResumeIndex = updated.resumeIndex,
+                emptyPlayerVisible = input.emptyPlayerVisible || updated.removedCurrent,
                 queueSelectedKeys = input.queueSelectedKeys - keys)
+        }
+        if (mutation.removedCurrent) {
+            clearQueuePlaybackPreference()
+            StreamPlayback.stop()
         }
     }
 
@@ -785,7 +872,7 @@ class AppController(
     override fun onResume() = StreamPlayback.resume()
     override fun onStop() {
         clearQueuePlaybackPreference()
-        interaction.update { it.copy(queueIndex = -1, queueResumeIndex = 0, queueVisible = false, queueEditing = false, queueSelectedKeys = emptySet()) }
+        interaction.update { it.copy(emptyPlayerVisible = false, queueIndex = -1, queueResumeIndex = 0, queueVisible = false, queueEditing = false, queueSelectedKeys = emptySet()) }
         StreamPlayback.stop()
     }
     override fun onSeek(positionMs: Long) = StreamPlayback.seekTo(positionMs)
@@ -892,7 +979,10 @@ class AppController(
         if (interaction.value.renamingAudioPath != null) { notice("오디오 이름을 변경하는 중이에요. 완료된 뒤 삭제해 주세요.", true); return }
         val paths = results.mapTo(mutableSetOf()) { canonicalPath(it.path) }
         val playingPath = StreamPlayback.state.value.localAudioPath?.let(::canonicalPath)
-        if (playingPath != null && playingPath in paths) StreamPlayback.stop()
+        if (playingPath != null && playingPath in paths) {
+            interaction.update { it.copy(emptyPlayerVisible = true) }
+            StreamPlayback.stop()
+        }
         try {
             val outcome = AppStore.removeMany(appContext, results)
             updateLibraryQuery(interaction.value.libraryQuery.withAvailableTags(AppStore.history.value.map(AudioResult::tags)), AppStore.history.value)
@@ -976,7 +1066,10 @@ class AppController(
         val targetIds = targets.mapTo(mutableSetOf(), BotVideo::messageId)
         val fileIds = targets.mapNotNull { it.fileId.takeIf { id -> id > 0 } }.toSet()
         val playingFileId = StreamPlayback.state.value.botFileId
-        if (playingFileId != null && playingFileId in fileIds) StreamPlayback.stop()
+        if (playingFileId != null && playingFileId in fileIds) {
+            interaction.update { it.copy(emptyPlayerVisible = true) }
+            StreamPlayback.stop()
+        }
         interaction.update {
             it.copy(
                 pendingBotDelete = null,
@@ -1095,7 +1188,7 @@ class AppController(
         else -> ""
     }
     private fun canonicalPath(path: String): String = runCatching { File(path).canonicalPath }.getOrDefault(File(path).absolutePath)
-    override fun onCleared() { hostEffects = null; controllerScope.cancel(); super.onCleared() }
+    override fun onCleared() { PlaybackQueueTransport.unbind(this); hostEffects = null; controllerScope.cancel(); super.onCleared() }
 }
 
 /** Use ViewModelProvider(activity, AppControllerFactory(activity.applicationContext))[AppController::class.java]. */
@@ -1145,6 +1238,7 @@ private data class InteractionState(
     val notificationsAllowed: Boolean = false,
     val diagnosticsAvailable: Boolean = false,
     val playerExpanded: Boolean = true,
+    val emptyPlayerVisible: Boolean = false,
     val playerSaveSourceKey: String? = null,
     val queue: List<QueueItemUi> = emptyList(),
     val queueIndex: Int = -1,
@@ -1177,7 +1271,7 @@ private data class InteractionState(
         preparingBotSaveSources = preparingBotSaveSources,
         preparingPlayerSaveSourceKey = preparingPlayerSaveSourceKey,
         notificationsAllowed = notificationsAllowed, diagnosticsAvailable = diagnosticsAvailable,
-        playerExpanded = playerExpanded, playerSaveSourceKey = playerSaveSourceKey,
+        playerExpanded = playerExpanded, emptyPlayerVisible = emptyPlayerVisible, playerSaveSourceKey = playerSaveSourceKey,
         queue = queue, queueIndex = queueIndex, queueVisible = queueVisible,
         queueEditing = queueEditing, queueSelectedKeys = queueSelectedKeys, queueResumeIndex = queueResumeIndex,
     )

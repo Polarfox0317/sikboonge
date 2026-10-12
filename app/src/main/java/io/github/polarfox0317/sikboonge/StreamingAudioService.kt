@@ -8,6 +8,7 @@ import android.os.Handler
 import android.os.Looper
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.FlagSet
 import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -21,9 +22,16 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import androidx.media3.session.CommandButton
 import androidx.annotation.OptIn
 import androidx.media3.common.util.UnstableApi
 import androidx.core.content.FileProvider
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
 
 /** Test seam for Bot media access; local playback uses the production content resolver. */
 internal object StreamingTestHooks {
@@ -43,7 +51,9 @@ class StreamingAudioService : MediaSessionService() {
         }
     }
     private var mediaSession: MediaSession? = null
+    private var mediaSessionScope: CoroutineScope? = null
     private var player: ExoPlayer? = null
+    private var sessionPlayer: QueueAwareForwardingPlayer? = null
     private var trackSelector: DefaultTrackSelector? = null
     private var hasSelectedAudio = false
     private var currentBotFileId: Int? = null
@@ -100,27 +110,28 @@ class StreamingAudioService : MediaSessionService() {
                 addListener(playerListener)
             }
         player = activePlayer
-        val sessionPlayer = object : ForwardingPlayer(activePlayer) {
-            override fun play() {
-                if (activePlayer.playbackState == Player.STATE_ENDED) activePlayer.seekToDefaultPosition()
-                super.play()
-            }
-
-            override fun stop() {
-                stopPlayback()
-            }
-        }
+        val connectedPlayer = QueueAwareForwardingPlayer(activePlayer)
+        sessionPlayer = connectedPlayer
         val appPendingIntent = PendingIntent.getActivity(
             this,
             0,
             Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
-        val createdSession = MediaSession.Builder(this, sessionPlayer)
+        val createdSession = MediaSession.Builder(this, connectedPlayer)
             .setSessionActivity(appPendingIntent)
             .setCallback(mediaSessionCallback)
             .build()
         mediaSession = createdSession
+        mediaSessionScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate).also { scope ->
+            scope.launch {
+                PlaybackQueueTransport.availability.collect { availability ->
+                    updateQueuePlayerCommands(createdSession, availability)
+                    connectedPlayer.notifyQueueAvailabilityChanged()
+                }
+            }
+        }
+        createdSession.setMediaButtonPreferences(mediaButtonPreferences())
         addSession(createdSession)
     }
 
@@ -271,8 +282,6 @@ class StreamingAudioService : MediaSessionService() {
     }
 
     private fun stopPlayback() {
-        player?.apply { stop(); clearMediaItems() }
-        releaseBotLease()
         currentBotFileId = null
         currentLocalAudioPath = null
         currentLocalAudioMime = null
@@ -281,9 +290,11 @@ class StreamingAudioService : MediaSessionService() {
         localMediaUri = null
         currentTitle = "Telegram 오디오"
         currentSourceBytes = 0L
-        mainHandler.removeCallbacks(positionTicker)
         hasSelectedAudio = false
         StreamPlayback.publish(StreamingState())
+        player?.apply { stop(); clearMediaItems() }
+        releaseBotLease()
+        mainHandler.removeCallbacks(positionTicker)
         stopSelf()
     }
 
@@ -408,20 +419,129 @@ class StreamingAudioService : MediaSessionService() {
             controller: MediaSession.ControllerInfo
         ): MediaSession.ConnectionResult {
             val sessionCommands = MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS
-            val playerCommands = MediaSession.ConnectionResult.DEFAULT_PLAYER_COMMANDS.buildUpon()
+            val playerCommands = playerCommandsFor(PlaybackQueueTransport.availability.value)
+            return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+                .setAvailableSessionCommands(sessionCommands)
+                .setAvailablePlayerCommands(playerCommands)
+                .setMediaButtonPreferences(mediaButtonPreferences())
+                .build()
+        }
+
+    }
+
+    private fun playerCommandsFor(availability: QueueTransportAvailability): Player.Commands =
+        MediaControlPolicy.withQueueNavigation(
+            MediaSession.ConnectionResult.DEFAULT_PLAYER_COMMANDS.buildUpon()
                 .remove(Player.COMMAND_SET_MEDIA_ITEM)
                 .remove(Player.COMMAND_CHANGE_MEDIA_ITEMS)
                 .remove(Player.COMMAND_SEEK_TO_MEDIA_ITEM)
-                .remove(Player.COMMAND_SEEK_TO_NEXT)
-                .remove(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
-                .remove(Player.COMMAND_SEEK_TO_PREVIOUS)
-                .remove(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
-                .build()
-            return MediaSession.ConnectionResult.accept(sessionCommands, playerCommands)
+                .build(),
+            availability.hasPrevious,
+            availability.hasNext
+        )
+
+    private inner class QueueAwareForwardingPlayer(player: Player) : ForwardingPlayer(player) {
+        private val availabilityListeners = LinkedHashSet<Player.Listener>()
+
+        override fun getAvailableCommands(): Player.Commands {
+            val queue = PlaybackQueueTransport.availability.value
+            return MediaControlPolicy.withQueueNavigation(
+                super.getAvailableCommands(),
+                queue.hasPrevious,
+                queue.hasNext
+            )
+        }
+
+        override fun isCommandAvailable(command: Int): Boolean =
+            availableCommands.contains(command)
+
+        override fun addListener(listener: Player.Listener) {
+            availabilityListeners.add(listener)
+            super.addListener(listener)
+        }
+
+        override fun removeListener(listener: Player.Listener) {
+            availabilityListeners.remove(listener)
+            super.removeListener(listener)
+        }
+
+        fun notifyQueueAvailabilityChanged() {
+            val commands = availableCommands
+            availabilityListeners.toList().forEach { listener ->
+                listener.onAvailableCommandsChanged(commands)
+                listener.onEvents(
+                    this,
+                    Player.Events(FlagSet.Builder()
+                        .add(Player.EVENT_AVAILABLE_COMMANDS_CHANGED)
+                        .build())
+                )
+            }
+        }
+
+        override fun play() {
+            if (player?.playbackState == Player.STATE_ENDED) player?.seekToDefaultPosition()
+            super.play()
+        }
+
+        override fun stop() {
+            BotRuntime.cancelPendingPlayback()
+            stopPlayback()
+        }
+
+        override fun seekToNextMediaItem() {
+            PlaybackQueueTransport.next()
+        }
+
+        override fun seekToNext() {
+            PlaybackQueueTransport.next()
+        }
+
+        override fun seekToPreviousMediaItem() {
+            PlaybackQueueTransport.previous()
+        }
+
+        override fun seekToPrevious() {
+            PlaybackQueueTransport.previous()
+        }
+    }
+
+    private fun mediaButtonPreferences(): List<CommandButton> = listOf(
+        CommandButton.Builder(CommandButton.ICON_SKIP_BACK_10)
+            .setDisplayName("10초 뒤로")
+            .setPlayerCommand(Player.COMMAND_SEEK_BACK)
+            .setSlots(CommandButton.SLOT_OVERFLOW)
+            .build(),
+        CommandButton.Builder(CommandButton.ICON_PREVIOUS)
+            .setDisplayName("이전")
+            .setPlayerCommand(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
+            .setSlots(CommandButton.SLOT_BACK)
+            .build(),
+        CommandButton.Builder(CommandButton.ICON_NEXT)
+            .setDisplayName("다음")
+            .setPlayerCommand(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
+            .setSlots(CommandButton.SLOT_FORWARD)
+            .build(),
+        CommandButton.Builder(CommandButton.ICON_SKIP_FORWARD_10)
+            .setDisplayName("10초 앞으로")
+            .setPlayerCommand(Player.COMMAND_SEEK_FORWARD)
+            .setSlots(CommandButton.SLOT_OVERFLOW)
+            .build()
+    )
+
+    private fun updateQueuePlayerCommands(
+        session: MediaSession,
+        availability: QueueTransportAvailability
+    ) {
+        val sessionCommands = MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS
+        val playerCommands = playerCommandsFor(availability)
+        session.connectedControllers.forEach { controller ->
+            session.setAvailableCommands(controller, sessionCommands, playerCommands)
         }
     }
 
     override fun onDestroy() {
+        mediaSessionScope?.cancel()
+        mediaSessionScope = null
         mainHandler.removeCallbacks(positionTicker)
         player?.removeListener(playerListener)
         StreamPlayback.publish(
@@ -435,6 +555,7 @@ class StreamingAudioService : MediaSessionService() {
         player?.release()
         releaseBotLease()
         player = null
+        sessionPlayer = null
         mediaSession?.release()
         mediaSession = null
         trackSelector = null

@@ -35,6 +35,13 @@ internal fun bundledChangelog(
         version = "1.1.0",
         releaseUrl = null,
     ).blocks
+    132L -> parseReleaseNotes(
+        body = CHANGELOG_1_1_1,
+        preferredLanguage = preferredLanguage,
+        releaseTitle = "싴붕이 1.1.1",
+        version = "1.1.1",
+        releaseUrl = null,
+    ).blocks
     else -> null
 }
 
@@ -113,4 +120,41 @@ private val CHANGELOG_1_1_0 = """
 
     - Refresh now retries the bot connection when disconnected.
     - Fixed the download-start message disappearing immediately after preparation finished.
+""".trimIndent()
+
+// Approved bilingual release notes. Keep category order and wording unchanged.
+private val CHANGELOG_1_1_1 = """
+    # 싴붕이 1.1.1
+
+    ## 한국어
+
+    ### 재생 기능 개선
+    - Android 미디어 컨트롤에 이전·다음 항목과 10초 앞뒤 이동 버튼을 추가했어요.
+
+    ### 제목 편집 개선
+    - 영상 제목의 120자 제한을 제거했어요.
+    - 긴 영상 제목을 편집할 때 입력란의 폭을 충분히 사용하고, 글자 단위로 줄바꿈되도록 개선했어요.
+
+    ### 버그 수정
+    - `재생`을 누르면 선택한 파일만 재생해야 하는데 기존 재생목록에 추가되던 문제를 수정했어요.
+    - 재생 중인 항목을 재생목록에서 삭제해도 재생이 계속되던 문제를 수정했어요.
+    - 재생이 끝난 뒤 재생목록의 다음 항목으로 이어지지 않던 문제를 수정했어요.
+    - 긴 파일 이름과 검색어를 편집할 때 커서를 좌우 끝에 잡고 있어도 스크롤되지 않던 문제를 수정했어요.
+    - 업데이트 다운로드 완료 알림을 눌러도 설치 화면이 열리지 않던 문제를 수정했어요.
+
+    ## English
+
+    ### Playback improvements
+    - Added previous, next, and 10-second backward and forward controls to Android media controls.
+
+    ### Title editing improvements
+    - Removed the 120-character limit for video titles.
+    - Long video titles now use the available input width and wrap at character boundaries while editing.
+
+    ### Bug fixes
+    - Fixed `Play` appending the selected file to the existing queue instead of replacing it.
+    - Fixed playback continuing after the currently playing item was removed from the queue.
+    - Fixed playback stopping instead of continuing to the next item in the queue.
+    - Fixed long filenames and search queries not scrolling while holding the cursor handle at either edge.
+    - Fixed the installer not opening when tapping the update download completion notification.
 """.trimIndent()

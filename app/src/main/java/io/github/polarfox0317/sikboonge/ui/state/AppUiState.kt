@@ -78,6 +78,8 @@ data class AppUiState(
     val notificationsAllowed: Boolean = false,
     val diagnosticsAvailable: Boolean = false,
     val playerExpanded: Boolean = true,
+    /** Keeps the basic empty player visible after its current queue entry is removed. */
+    val emptyPlayerVisible: Boolean = false,
     val playerSaveSourceKey: String? = null,
     val queue: List<QueueItemUi> = emptyList(),
     val queueIndex: Int = -1,
