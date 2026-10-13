@@ -20,6 +20,12 @@ The audio AAR also supplies codecs/support libraries with their own LGPL, BSD-st
 * JUnit 4.13.2: [upstream license](https://github.com/junit-team/junit4/blob/main/LICENSE-junit.txt), EPL-1.0, tests only. Dropshots 0.6.0: [upstream source/license](https://github.com/dropbox/dropshots), Apache-2.0, test library/build plugin. Neither is relicensed by the root MIT file.
 
 
+## Adapted source code
+
+The app also adapts `es-hangul`'s `getChoseong` mapping at revision `920119b` in `HangulSearch.kt` (Copyright (c) 2024 Viva Republica, Inc; MIT). The original license is in `licenses/es-hangul.txt`, with adaptation details in `licenses/notices/es-hangul-Port.txt`.
+
+`SystemMediaArtworkListener.java` adapts `ForwardingPlayer.ForwardingListener` from AndroidX Media3 1.9.3 (Copyright 2021 The Android Open Source Project; Apache-2.0). Its original header is retained, and `licenses/notices/Media3-PortedCode.txt` records the source and modifications. Both adaptations are listed in the app's offline open-source license screen.
+
 ## Binary distribution and LGPL
 
 `licenses/` includes LGPL-3.0, GPL-3.0, LGPL-2.1, Apache-2.0, and BSL-1.0 texts; the GPL text accompanies LGPL-3.0 and does not establish that the app selected a GPL FFmpegKit variant. `app/build.gradle.kts` includes this directory as APK assets.

@@ -5,6 +5,8 @@ import android.app.Notification
 import android.app.NotificationManager
 import android.content.ComponentName
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Color
 import android.media.MediaMetadata as PlatformMediaMetadata
 import android.media.session.MediaController as PlatformMediaController
 import android.media.session.MediaSession as PlatformMediaSession
@@ -143,6 +145,64 @@ class LocalPlaybackSessionTest {
         } finally {
             fixture.delete()
         }
+    }
+
+    @Test fun systemArtworkToggleKeepsMediaNotificationAndPausedPosition() {
+        val fixture = createWavFixture()
+        val artwork = File(File(context.filesDir, "audio-artwork").apply { mkdirs() }, "qa-system-${System.nanoTime()}.png")
+        val bitmap = Bitmap.createBitmap(32, 32, Bitmap.Config.ARGB_8888)
+        bitmap.eraseColor(Color.rgb(40, 90, 160))
+        artwork.outputStream().use { assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+        bitmap.recycle()
+        var originalArtworkEnabled = false
+        try {
+            foreground()
+            instrumentation.runOnMainSync {
+                SystemMediaArtworkStore.initialize(context)
+                originalArtworkEnabled = SystemMediaArtworkStore.enabled.value
+                SystemMediaArtworkStore.set(context, false)
+                StreamPlayback.playLocal(context, fixture.toAudioResult().copy(artworkPath = artwork.absolutePath))
+            }
+            await("Fixture did not start") { StreamPlayback.state.value.playing || StreamPlayback.state.value.error != null }
+            assertTrue("Fixture failed: ${StreamPlayback.state.value}", StreamPlayback.state.value.playing)
+            val notification = awaitMediaSessionNotification(fixture.name)
+            @Suppress("DEPRECATION")
+            val token = requireNotNull(notification.extras.getParcelable<PlatformMediaSession.Token>(Notification.EXTRA_MEDIA_SESSION))
+            val controller = PlatformMediaController(context, token)
+            assertNull("OFF exposed artwork", platformArtwork(controller))
+            controller.transportControls.pause()
+            await("Could not pause fixture") { !StreamPlayback.state.value.playing }
+            controller.transportControls.seekTo(12_000L)
+            await("Could not position fixture") { StreamPlayback.state.value.positionMs >= 12_000L }
+            val pausedAt = StreamPlayback.state.value.positionMs
+
+            instrumentation.runOnMainSync { SystemMediaArtworkStore.set(context, true) }
+            await("ON did not publish imported artwork to the platform session") { platformArtwork(controller) != null }
+            assertEquals(fixture.name, controller.metadata?.getString(PlatformMediaMetadata.METADATA_KEY_TITLE))
+            assertNotNull(awaitMediaSessionNotification(fixture.name))
+            assertFalse("Artwork ON restarted playback", StreamPlayback.state.value.playing)
+            assertEquals("Artwork ON reset position", pausedAt, StreamPlayback.state.value.positionMs)
+
+            instrumentation.runOnMainSync { SystemMediaArtworkStore.set(context, false) }
+            await("OFF did not clear platform artwork") { platformArtwork(controller) == null }
+            assertNotNull(awaitMediaSessionNotification(fixture.name))
+            assertFalse("Artwork OFF restarted playback", StreamPlayback.state.value.playing)
+            assertEquals("Artwork OFF reset position", pausedAt, StreamPlayback.state.value.positionMs)
+        } finally {
+            instrumentation.runOnMainSync {
+                StreamPlayback.stop()
+                SystemMediaArtworkStore.set(context, originalArtworkEnabled)
+            }
+            fixture.delete()
+            artwork.delete()
+        }
+    }
+
+    private fun platformArtwork(controller: PlatformMediaController): Bitmap? {
+        val metadata = controller.metadata ?: return null
+        return metadata.getBitmap(PlatformMediaMetadata.METADATA_KEY_ALBUM_ART)
+            ?: metadata.getBitmap(PlatformMediaMetadata.METADATA_KEY_ART)
+            ?: metadata.getBitmap(PlatformMediaMetadata.METADATA_KEY_DISPLAY_ICON)
     }
 
     @Test fun invalidPathStopsPlaybackAfterLocalSession() {

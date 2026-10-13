@@ -1,0 +1,13 @@
+es-hangul - getChoseong Kotlin port
+
+Copyright (c) 2024 Viva Republica, Inc
+License: MIT. The complete upstream text is bundled in es-hangul.txt.
+
+Original source revision: 920119b
+https://github.com/toss/es-hangul/blob/920119b/src/core/getChoseong/getChoseong.ts
+
+Adapted file: ui/state/HangulSearch.kt
+Changes: ported the 19-character choseong mapping to Kotlin, used JVM NFD
+normalization to extract initials from syllables, and integrated explicit
+initial/literal mixed matching with the app's title and tag search.
+The JavaScript package itself is not included in the application.

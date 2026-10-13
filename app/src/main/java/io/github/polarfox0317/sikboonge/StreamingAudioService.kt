@@ -28,10 +28,13 @@ import androidx.media3.common.util.UnstableApi
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.util.IdentityHashMap
 
 /** Test seam for Bot media access; local playback uses the production content resolver. */
 internal object StreamingTestHooks {
@@ -62,13 +65,19 @@ class StreamingAudioService : MediaSessionService() {
     private var currentLocalAudioMime: String? = null
     private var currentArtworkPath: String? = null
     private var currentArtworkBase64: String = ""
+    private var currentArtworkSourceIdentity: String = ""
+    private var systemArtworkBytes: ByteArray? = null
+    private var systemArtworkGeneration = 0L
+    private var systemArtworkLoadJob: Job? = null
     @Volatile private var localMediaUri: Uri? = null
     private var currentSourceBytes = 0L
     private var leasedBotFileId: Int? = null
     private var botAccess: TdlibFileAccess = BotRuntime
+    private var replacingMediaSource = false
 
     override fun onCreate() {
         super.onCreate()
+        SystemMediaArtworkStore.initialize(this)
         val selector = DefaultTrackSelector(this).apply {
             parameters = buildUponParameters()
                 .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, true)
@@ -130,6 +139,9 @@ class StreamingAudioService : MediaSessionService() {
                     connectedPlayer.notifyQueueAvailabilityChanged()
                 }
             }
+            scope.launch {
+                SystemMediaArtworkStore.enabled.collect(::onSystemArtworkPreferenceChanged)
+            }
         }
         createdSession.setMediaButtonPreferences(mediaButtonPreferences())
         addSession(createdSession)
@@ -166,18 +178,27 @@ class StreamingAudioService : MediaSessionService() {
         if (fileId <= 0 || bytes < 0L) {
             fail("봇 영상 정보를 확인할 수 없어요."); return
         }
-        player?.apply { stop(); clearMediaItems() }
-        releaseBotLease()
-        currentBotFileId = fileId
-        currentLocalAudioPath = null
-        currentLocalAudioMime = null
-        currentArtworkPath = intent.getStringExtra(EXTRA_ARTWORK_PATH)
-        currentArtworkBase64 = intent.getStringExtra(EXTRA_ARTWORK_BASE64).orEmpty()
-        localMediaUri = null
-        currentTitle = intent.getStringExtra(BotRuntime.EXTRA_TDLIB_NAME).orEmpty().ifBlank { "Telegram 영상" }
-        currentSourceBytes = bytes
-        botAccess.beginPlayback(fileId)
-        leasedBotFileId = fileId
+        val selected = StreamPlayback.state.value
+        if (selected.source != PlaybackSource.BOT || selected.botFileId != fileId) return
+        replacingMediaSource = true
+        try {
+            clearSystemArtworkSource()
+            player?.apply { stop(); clearMediaItems() }
+            releaseBotLease()
+            currentBotFileId = fileId
+            currentLocalAudioPath = null
+            currentLocalAudioMime = null
+            currentArtworkPath = intent.getStringExtra(EXTRA_ARTWORK_PATH)
+            currentArtworkBase64 = intent.getStringExtra(EXTRA_ARTWORK_BASE64).orEmpty()
+            switchArtworkSource("bot:$fileId")
+            localMediaUri = null
+            currentTitle = intent.getStringExtra(BotRuntime.EXTRA_TDLIB_NAME).orEmpty().ifBlank { "Telegram 영상" }
+            currentSourceBytes = bytes
+            botAccess.beginPlayback(fileId)
+            leasedBotFileId = fileId
+        } finally {
+            replacingMediaSource = false
+        }
         startMedia(Uri.parse("tdlib://file/$fileId"))
     }
 
@@ -208,17 +229,24 @@ class StreamingAudioService : MediaSessionService() {
             return
         }
 
-        player?.apply { stop(); clearMediaItems() }
-        releaseBotLease()
-        currentBotFileId = null
-        currentLocalAudioPath = file.absolutePath
-        currentLocalAudioMime = LocalPlaybackPolicy.audioMime(intent.getStringExtra(EXTRA_LOCAL_AUDIO_MIME))
-        currentArtworkPath = intent.getStringExtra(EXTRA_ARTWORK_PATH)
-        currentArtworkBase64 = ""
-        localMediaUri = contentUri
-        currentTitle = intent.getStringExtra(EXTRA_LOCAL_AUDIO_TITLE)?.takeIf { it.isNotBlank() } ?: file.name
-        currentSourceBytes = file.length()
-        hasSelectedAudio = false
+        replacingMediaSource = true
+        try {
+            clearSystemArtworkSource()
+            player?.apply { stop(); clearMediaItems() }
+            releaseBotLease()
+            currentBotFileId = null
+            currentLocalAudioPath = file.absolutePath
+            currentLocalAudioMime = LocalPlaybackPolicy.audioMime(intent.getStringExtra(EXTRA_LOCAL_AUDIO_MIME))
+            currentArtworkPath = intent.getStringExtra(EXTRA_ARTWORK_PATH)
+            currentArtworkBase64 = ""
+            switchArtworkSource("local:${file.canonicalPath}")
+            localMediaUri = contentUri
+            currentTitle = intent.getStringExtra(EXTRA_LOCAL_AUDIO_TITLE)?.takeIf { it.isNotBlank() } ?: file.name
+            currentSourceBytes = file.length()
+            hasSelectedAudio = false
+        } finally {
+            replacingMediaSource = false
+        }
         startMedia(contentUri, currentLocalAudioMime)
     }
 
@@ -227,12 +255,83 @@ class StreamingAudioService : MediaSessionService() {
         leasedBotFileId = null
     }
 
+    private fun switchArtworkSource(identity: String) {
+        systemArtworkLoadJob?.cancel()
+        systemArtworkLoadJob = null
+        systemArtworkGeneration += 1
+        currentArtworkSourceIdentity = identity
+        systemArtworkBytes = null
+        if (SystemMediaArtworkStore.enabled.value) loadSystemArtwork()
+    }
+
+    private fun onSystemArtworkPreferenceChanged(enabled: Boolean) {
+        systemArtworkLoadJob?.cancel()
+        systemArtworkLoadJob = null
+        systemArtworkGeneration += 1
+        if (enabled) {
+            loadSystemArtwork()
+        } else {
+            systemArtworkBytes = null
+            publishSystemArtwork()
+        }
+    }
+
+    private fun loadSystemArtwork() {
+        val scope = mediaSessionScope ?: return
+        val source = currentArtworkSourceIdentity
+        if (source.isBlank()) return
+        val generation = ++systemArtworkGeneration
+        val path = currentArtworkPath
+        val base64 = currentArtworkBase64
+        systemArtworkLoadJob = scope.launch {
+            val bytes = withContext(Dispatchers.IO) {
+                SystemMediaArtworkLoader.load(this@StreamingAudioService, path, base64)
+            }
+            if (SystemMediaArtworkPolicy.isCurrentRequest(
+                    enabled = SystemMediaArtworkStore.enabled.value,
+                    requestGeneration = generation,
+                    activeGeneration = systemArtworkGeneration,
+                    requestSource = source,
+                    activeSource = currentArtworkSourceIdentity,
+                )
+            ) {
+                systemArtworkBytes = bytes
+                publishSystemArtwork()
+            }
+        }
+    }
+
+    /** Update the real timeline item so MediaSession's internal controller receives native events. */
+    private fun publishSystemArtwork() {
+        val activePlayer = player ?: return
+        if (currentArtworkSourceIdentity.isBlank()) return
+        val index = activePlayer.currentMediaItemIndex
+        if (index !in 0 until activePlayer.mediaItemCount) return
+        val item = activePlayer.currentMediaItem ?: return
+        val updatedItem = SystemMediaArtworkPolicy.mediaItem(
+            item,
+            SystemMediaArtworkStore.enabled.value,
+            systemArtworkBytes,
+        )
+        // Only metadata changes: URI and local configuration are copied unchanged. Progressive
+        // MediaSource can update this item in place, preserving position and playWhenReady.
+        activePlayer.replaceMediaItem(index, updatedItem)
+    }
+
+    private fun exposedSystemMetadata(metadata: MediaMetadata): MediaMetadata =
+        SystemMediaArtworkPolicy.metadata(
+            source = metadata,
+            enabled = SystemMediaArtworkStore.enabled.value,
+            importedArtwork = systemArtworkBytes,
+        )
+
     private fun startMedia(mediaItemUri: Uri, mimeType: String? = null) {
         val activePlayer = player ?: return
         hasSelectedAudio = false
         StreamPlayback.publish(StreamingState(
             source = if (currentBotFileId != null) PlaybackSource.BOT else PlaybackSource.LOCAL_AUDIO,
             title = currentTitle,
+            resolving = false,
             buffering = true,
             botFileId = currentBotFileId,
             sourceBytes = currentSourceBytes,
@@ -282,6 +381,7 @@ class StreamingAudioService : MediaSessionService() {
     }
 
     private fun stopPlayback() {
+        clearSystemArtworkSource()
         currentBotFileId = null
         currentLocalAudioPath = null
         currentLocalAudioMime = null
@@ -299,6 +399,7 @@ class StreamingAudioService : MediaSessionService() {
     }
 
     private fun fail(message: String) {
+        clearSystemArtworkSource()
         player?.apply { stop(); clearMediaItems() }
         releaseBotLease()
         mainHandler.removeCallbacks(positionTicker)
@@ -318,6 +419,7 @@ class StreamingAudioService : MediaSessionService() {
     private fun publishPlayerState(activePlayer: ExoPlayer?) {
         if (activePlayer == null) return
         val previous = StreamPlayback.state.value
+        if (!ownsPublishedSource(previous)) return
         val duration = activePlayer.duration.takeIf { it != C.TIME_UNSET && it >= 0L } ?: 0L
         val position = when {
             duration > 0L && activePlayer.playbackState == Player.STATE_ENDED -> duration
@@ -346,9 +448,27 @@ class StreamingAudioService : MediaSessionService() {
         )
     }
 
+    private fun matchesServiceSource(stream: StreamingState): Boolean = when {
+        currentBotFileId != null -> stream.source == PlaybackSource.BOT && stream.botFileId == currentBotFileId
+        currentLocalAudioPath != null -> stream.source == PlaybackSource.LOCAL_AUDIO &&
+            stream.localAudioPath == currentLocalAudioPath
+        else -> false
+    }
+
+    private fun ownsPublishedSource(stream: StreamingState): Boolean =
+        !replacingMediaSource && !stream.resolving && matchesServiceSource(stream)
+
     private fun schedulePositionTicker() {
         mainHandler.removeCallbacks(positionTicker)
         mainHandler.post(positionTicker)
+    }
+
+    private fun clearSystemArtworkSource() {
+        systemArtworkLoadJob?.cancel()
+        systemArtworkLoadJob = null
+        systemArtworkGeneration += 1
+        currentArtworkSourceIdentity = ""
+        systemArtworkBytes = null
     }
 
     private fun hasAudioTrack(tracks: Tracks): Boolean = tracks.groups.any { group ->
@@ -357,6 +477,7 @@ class StreamingAudioService : MediaSessionService() {
 
     private val playerListener = object : Player.Listener {
         override fun onPlaybackStateChanged(playbackState: Int) {
+            if (!ownsPublishedSource(StreamPlayback.state.value)) return
             val activePlayer = player ?: return
             if (playbackState == Player.STATE_READY || playbackState == Player.STATE_ENDED) {
                 hasSelectedAudio = hasAudioTrack(activePlayer.currentTracks)
@@ -372,6 +493,7 @@ class StreamingAudioService : MediaSessionService() {
         }
 
         override fun onTracksChanged(tracks: Tracks) {
+            if (!ownsPublishedSource(StreamPlayback.state.value)) return
             val activePlayer = player ?: return
             val hasAnyAudioTrack = tracks.groups.any { it.type == C.TRACK_TYPE_AUDIO }
             if (tracks.groups.isNotEmpty() && !hasAnyAudioTrack) {
@@ -389,6 +511,7 @@ class StreamingAudioService : MediaSessionService() {
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
+            if (!ownsPublishedSource(StreamPlayback.state.value)) return
             player?.let { activePlayer ->
                 publishPlayerState(activePlayer)
                 if (isPlaying || activePlayer.playbackState == Player.STATE_BUFFERING) schedulePositionTicker()
@@ -397,12 +520,14 @@ class StreamingAudioService : MediaSessionService() {
         }
 
         override fun onEvents(eventPlayer: Player, events: Player.Events) {
+            if (!ownsPublishedSource(StreamPlayback.state.value)) return
             if (events.contains(Player.EVENT_POSITION_DISCONTINUITY)) {
                 publishPlayerState(player)
             }
         }
 
         override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+            if (!ownsPublishedSource(StreamPlayback.state.value)) return
             AppDiagnostics.failure("playback", error)
             fail(if (currentLocalAudioPath != null) {
                 LocalPlaybackPolicy.INVALID_AUDIO_ERROR
@@ -442,6 +567,9 @@ class StreamingAudioService : MediaSessionService() {
 
     private inner class QueueAwareForwardingPlayer(player: Player) : ForwardingPlayer(player) {
         private val availabilityListeners = LinkedHashSet<Player.Listener>()
+        private val listenerWrappers = IdentityHashMap<Player.Listener, Player.Listener>()
+
+        override fun getMediaMetadata(): MediaMetadata = exposedSystemMetadata(super.getMediaMetadata())
 
         override fun getAvailableCommands(): Player.Commands {
             val queue = PlaybackQueueTransport.availability.value
@@ -456,13 +584,16 @@ class StreamingAudioService : MediaSessionService() {
             availableCommands.contains(command)
 
         override fun addListener(listener: Player.Listener) {
+            if (listenerWrappers.containsKey(listener)) return
             availabilityListeners.add(listener)
-            super.addListener(listener)
+            val wrapper = SystemMediaArtworkListener(this, listener, ::exposedSystemMetadata)
+            listenerWrappers[listener] = wrapper
+            super.addListener(wrapper)
         }
 
         override fun removeListener(listener: Player.Listener) {
             availabilityListeners.remove(listener)
-            super.removeListener(listener)
+            listenerWrappers.remove(listener)?.let { wrapper -> super.removeListener(wrapper) }
         }
 
         fun notifyQueueAvailabilityChanged() {
@@ -540,6 +671,7 @@ class StreamingAudioService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        clearSystemArtworkSource()
         mediaSessionScope?.cancel()
         mediaSessionScope = null
         mainHandler.removeCallbacks(positionTicker)

@@ -290,7 +290,7 @@ open class ConversionServiceBackend : Service() {
                 }
                 AppStore.setDownloadSource(requireNotNull(job.downloadId), requireNotNull(job.fileId))
             }
-            val source: String
+            var source: String
             val bridge: ExternalAudioInputBridge?
             if (job.fileId != null) {
                 val onRange: (Long, Long, Long?) -> Unit = { offset, bytes, total ->
@@ -335,31 +335,63 @@ open class ConversionServiceBackend : Service() {
             }
 
             job.checkCancelled()
-            val probe = if (job.bridge != null) inspectBot(job, requireNotNull(job.bridge)) else {
+            var probe = if (job.bridge != null) inspectBot(job, requireNotNull(job.bridge)) else {
                 val localInput = legacyInput ?: input ?: throw IllegalArgumentException("영상 파일을 열 수 없어요.")
                 val (codec, duration) = AudioEngine.inspect(localInput)
                 AudioProbe(codec, duration, localInput.length())
             }
             val format = AudioFormat.valueOf(job.request.getStringExtra("format") ?: "ORIGINAL")
-            val plan = AudioEngine.plan(format, probe.codec)
+            var plan = AudioEngine.plan(format, probe.codec)
             val safeStem = name.replace(Regex("[\\\\/:*?\"<>|]"), "_").take(70).ifBlank { "오디오" }
             val folder = File(filesDir, "audio").apply { mkdirs() }
-            output = reserveOutput(folder, safeStem, plan.extension, job.id)
             val outputLimit = if (job.isBot) BotAudioSavePolicy.outputLimit(folder.usableSpace) else null
-            val stage = if (job.isBot) "Telegram 오디오 저장 중" else "오디오 추출 중"
-            updateJob(job, stage, 0f, force = true)
-            BotAudioSaveTestHooks.beforeConvert?.invoke(job.bridge)
-            AudioEngine.convert(
-                source,
-                output,
-                plan,
-                probe.duration,
-                { progress -> if (job.runGeneration == generation) updateJob(job, stage, progress) },
-                { sessionId -> job.sessions.registerSession(sessionId, AudioEngine::cancel) },
-                if (job.isBot) job.clock.remainingSeconds() else DEFAULT_CONVERSION_TIMEOUT_SECONDS,
-                externalInputBridge = job.bridge,
-                maxOutputBytes = outputLimit,
-            )
+            var extractionAttempt = 0
+            while (true) {
+                job.checkCancelled()
+                val stage = if (job.isBot) {
+                    if (extractionAttempt == 0) "Telegram 오디오 저장 중" else "Telegram 오디오 다시 저장 중"
+                } else "오디오 추출 중"
+                output = reserveOutput(folder, safeStem, plan.extension, job.id)
+                updateJob(job, stage, 0f, force = true)
+                try {
+                    BotAudioSaveTestHooks.beforeConvert?.invoke(job.bridge)
+                    AudioEngine.convert(
+                        source,
+                        output,
+                        plan,
+                        probe.duration,
+                        { progress -> if (job.runGeneration == generation) updateJob(job, stage, progress) },
+                        { sessionId -> job.sessions.registerSession(sessionId, AudioEngine::cancel) },
+                        if (job.isBot) job.clock.remainingSeconds() else DEFAULT_CONVERSION_TIMEOUT_SECONDS,
+                        externalInputBridge = job.bridge,
+                        maxOutputBytes = outputLimit,
+                    )
+                    break
+                } catch (error: IncompleteMediaInputException) {
+                    output?.delete()
+                    output = null
+                    val retryable = job.isBot && extractionAttempt == 0 && job.bridge != null
+                    if (!retryable) throw error
+                    job.checkCancelled()
+                    extractionAttempt++
+                    job.bridge?.close()
+                    job.checkCancelled()
+                    val retryBridge = ExternalAudioInputBridge.forBot(
+                        requireNotNull(job.fileId),
+                        job.request.getLongExtra(BotRuntime.EXTRA_TDLIB_SIZE, 0L),
+                        BotAudioSaveTestHooks.accessOverride ?: BotRuntime,
+                        onBytesTransferred = { offset, bytes, total ->
+                            if (job.runGeneration == generation) recordRange(job, offset, bytes, total)
+                        },
+                    )
+                    job.bridge = retryBridge
+                    source = retryBridge.inputUrl
+                    job.progress.retryProcessing(job.fileId?.let(BotRuntime::fileInfo)?.local?.downloadedSize?.toLong())
+                    updateJob(job, "입력 다시 연결 중", null, force = true)
+                    probe = inspectBot(job, retryBridge)
+                    plan = AudioEngine.plan(format, probe.codec)
+                }
+            }
             job.checkCancelled()
             val artworkPath = inputUri?.let { uri -> AudioArtworkStore.captureVideoThumbnail(this, uri, input) }
                 ?: AudioArtworkStore.capture(

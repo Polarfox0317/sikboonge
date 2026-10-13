@@ -12,7 +12,7 @@ sikboonge (싴붕이) is an Android app for extracting audio from local videos a
 - Plays saved audio in the app and lets you share or export it to another folder.
 - Queues bot audio saves. **Sequential** processes one job at a time in Save-click order (FIFO); **Parallel** processes up to three jobs. Paused jobs are skipped. Resuming preserves the original queue rank and never preempts a running job.
 - Pauses, resumes, and cancels downloads. If native audio extraction has already started, resuming restarts extraction from the prepared input. Individual progress and successful-save notifications are available when notifications are allowed.
-- Adds tags to Bot and Library items and searches titles and tags. `#tag` searches tags only; ordinary search terms match both titles and tags.
+- Adds tags to Bot and Library items and searches titles and tags, including Korean choseong queries such as `ㅎㄱ` and mixed Hangul/choseong queries such as `한ㄱ`. `#tag` searches tags only; ordinary search terms match both titles and tags.
 - Offers **Light**, **Dark**, and **System** themes, a first-launch welcome guide, and offline access to bundled open-source licenses and notices in Settings.
 
 The tabs appear in this order: **Bot**, **Convert**, **Library**. The app opens on Bot. Bot media uses the network; conversion from a video already on the device runs locally.
@@ -44,6 +44,11 @@ Treat the token and `api_hash` as secrets. The app encrypts the saved credential
 - In **Library**, select one file to play it immediately, or add several files to a playlist for sequential listening.
 - Share a local video from another app to open it in Convert with the file selected.
 - Find saved results in **Library**. From there, play, share, or export a copy.
+
+### Security
+
+- Turn on **Settings > Security > App lock** to require an authentication method registered on the device when opening the app and returning from the background. It is off by default. Android 8 (API 26) uses the device screen lock; Android 9 and later use supported biometrics or the device screen lock.
+- **System media thumbnail** controls artwork in playback notifications and the lock-screen media player. It is independent of app lock and off by default. Turning it off keeps artwork in the app.
 
 ## Build from source
 

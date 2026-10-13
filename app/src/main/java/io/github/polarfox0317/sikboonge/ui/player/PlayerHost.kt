@@ -14,6 +14,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.boundsInRoot
@@ -74,6 +75,7 @@ internal fun PlayerHost(
         if (state.queueVisible) PlayerQueueSheet(state, actions)
         return
     }
+    val displayStream = state.playerDisplayStream
     val timelineBounds = remember { mutableStateOf<Rect?>(null) }
     val collapseBounds = remember { mutableStateOf<Rect?>(null) }
     val collapseScrollBounds = remember { mutableStateOf<Rect?>(null) }
@@ -91,7 +93,11 @@ internal fun PlayerHost(
         collapseScrollBounds = collapseScrollBounds,
         canCollapseScroll = { titleScrollState.value == 0 },
     )
-    BoxWithConstraints(modifier.fillMaxSize().testTag("streamFeedback")) {
+    BoxWithConstraints(
+        modifier.fillMaxSize()
+            .windowInsetsPadding(WindowInsets.statusBars.only(WindowInsetsSides.Top))
+            .testTag("streamFeedback"),
+    ) {
         val compact = maxHeight < CompactPlayerHeight
         val expandedArtworkMaxWidth = maxWidth - AppDimens.sectionSpacing * 2
         val spatial = MaterialTheme.motionScheme.defaultSpatialSpec<Dp>()
@@ -108,8 +114,12 @@ internal fun PlayerHost(
             spatial, label = "playerSurfaceHeight",
         )
         val density = LocalDensity.current
+        val surfaceWidth = (maxWidth - side * 2).coerceAtLeast(0.dp)
+        val expandedContentWidth = minOf(surfaceWidth, AppDimens.maxFormWidth)
+        val expandedInnerWidth = (expandedContentWidth - AppDimens.contentHorizontalPadding(tier) * 2).coerceAtLeast(0.dp)
         val slot = artworkSlot.value
-        val fallbackArtwork = if (compact) CompactArtworkSize else ExpandedArtworkSize.coerceAtMost(expandedArtworkMaxWidth)
+        val fallbackArtwork = if (compact) CompactArtworkSize.coerceAtMost(expandedInnerWidth)
+            else ExpandedArtworkSize.coerceAtMost(expandedInnerWidth)
         // The largest square that fits the measured free space; small sources are scaled up (Crop).
         val slotSide = slot?.let { minOf(it.width, it.height).coerceAtLeast(0f) }
         val artworkSize by animateDpAsState(
@@ -117,20 +127,51 @@ internal fun PlayerHost(
             else MiniArtworkSize,
             spatial, label = "playerArtworkSize",
         )
-        val surfaceWidth = (maxWidth - side * 2).coerceAtLeast(0.dp)
         val artworkX by animateDpAsState(
             if (state.playerExpanded) {
                 if (slot != null && slotSide != null) with(density) { (slot.left + (slot.width - slotSide) / 2).toDp() }
-                else (surfaceWidth - fallbackArtwork) / 2
+                else (surfaceWidth - expandedContentWidth) / 2 + AppDimens.contentHorizontalPadding(tier) +
+                    (expandedInnerWidth - fallbackArtwork) / 2
             } else AppDimens.itemSpacing,
             spatial, label = "playerArtworkX",
         )
         val artworkY by animateDpAsState(
             if (state.playerExpanded) {
                 if (slot != null && slotSide != null) with(density) { (slot.top + (slot.height - slotSide) / 2).toDp() }
-                else AppDimens.itemSpacing + PlayerHeaderHeight + AppDimens.itemSpacing
+                else AppDimens.itemSpacing + PlayerHeaderHeight + AppDimens.selectionBadgeInset
             } else AppDimens.itemSpacing,
             spatial, label = "playerArtworkY",
+        )
+        val artworkSwipe = rememberPlayerArtworkSwipeState(
+            source = playerSourceKey(displayStream),
+            expanded = state.playerExpanded,
+            canPrevious = canPlayPrevious(state, playerPosition(stream)),
+            canNext = canPlayNext(state),
+            surfaceWidth = surfaceWidth,
+            currentArtwork = PlayerArtworkSwipeNeighbor(
+                displayStream.artworkPath,
+                displayStream.artworkBase64,
+                0,
+            ),
+            artworkForDirection = { direction ->
+                val index = if (state.queueIndex >= 0) state.queueIndex else state.queueResumeIndex
+                val item = when {
+                    direction > 0 -> state.queue.getOrNull(
+                        if (state.queueIndex >= 0) state.queueIndex + 1 else state.queueResumeIndex,
+                    )
+                    playerPosition(stream) > 3_000L -> null
+                    else -> state.queue.getOrNull(index - 1)
+                }
+                if (direction > 0 && !canPlayNext(state)) null
+                else if (direction < 0 && !canPlayPrevious(state, playerPosition(stream))) null
+                else if (direction < 0 && playerPosition(stream) > 3_000L) {
+                    PlayerArtworkSwipeNeighbor(displayStream.artworkPath, displayStream.artworkBase64, direction)
+                } else item?.let {
+                    PlayerArtworkSwipeNeighbor(it.artworkPath, it.artworkBase64, direction)
+                }
+            },
+            onPlayPrevious = actions::onPlayPrevious,
+            onPlayNext = actions::onPlayNext,
         )
         Surface(
             modifier = Modifier.align(Alignment.BottomCenter)
@@ -157,7 +198,7 @@ internal fun PlayerHost(
                     )) {
                         if (expanded) {
                             ExpandedPlayer(
-                                state, actions, compact,
+                                state.copy(stream = displayStream), actions, compact,
                                 if (compact) CompactArtworkSize else ExpandedArtworkSize.coerceAtMost(expandedArtworkMaxWidth),
                                 timelineBounds,
                                 collapseBounds = collapseBounds,
@@ -165,23 +206,50 @@ internal fun PlayerHost(
                                 titleScrollState = titleScrollState,
                                 artworkSlot = artworkSlot,
                                 hostCoordinates = hostCoordinates,
+                                tier = tier,
+                                isPreview = state.playerPreview != null,
                             )
                         } else {
-                            MiniPlayer(stream, actions)
+                            MiniPlayer(displayStream, actions)
                         }
                     }
                 }
                 // One artwork composable survives expansion; its bounds and shape follow spatial motion.
+                val swipeNeighbor = artworkSwipe.neighbor.value
+                val swipeOffsetX = artworkSwipe.offsetX.value
+                val currentArtwork = artworkSwipe.outgoing.value ?: PlayerArtworkSwipeNeighbor(
+                    displayStream.artworkPath,
+                    displayStream.artworkBase64,
+                    0,
+                )
+            if (state.playerExpanded && swipeOffsetX != 0f && swipeNeighbor != null) {
+                    val shape = rememberMediaArtworkShape(displayStream.playing)
+                    PlayerArtwork(
+                        artworkPath = swipeNeighbor.artworkPath,
+                        artworkBase64 = swipeNeighbor.artworkBase64,
+                        modifier = Modifier.offset(
+                            x = artworkX + surfaceWidth * swipeNeighbor.direction,
+                            y = artworkY,
+                        ).size(artworkSize)
+                            .graphicsLayer { translationX = swipeOffsetX }
+                            .clip(shape)
+                            .clearAndSetSemantics { },
+                    )
+                }
                 PlayerArtwork(
-                    artworkPath = stream.artworkPath,
-                    artworkBase64 = stream.artworkBase64,
+                    artworkPath = currentArtwork.artworkPath,
+                    artworkBase64 = currentArtwork.artworkBase64,
                     modifier = Modifier.offset(x = artworkX, y = artworkY).size(artworkSize)
-                        .clip(rememberMediaArtworkShape(stream.playing))
-                        .clickable(
-                            enabled = !state.playerExpanded,
-                            role = Role.Button,
-                            onClickLabel = "플레이어 펼치기",
-                        ) { actions.setPlayerExpanded(true) },
+                        .then(if (state.playerExpanded) {
+                            artworkSwipe.modifier
+                        } else {
+                            Modifier.clickable(
+                                role = Role.Button,
+                                onClickLabel = "플레이어 펼치기",
+                            ) { actions.setPlayerExpanded(true) }
+                        })
+                        .clip(rememberMediaArtworkShape(displayStream.playing))
+                        .testTag("streamArtwork"),
                 )
             }
         }
@@ -251,6 +319,8 @@ private fun ExpandedPlayer(
     titleScrollState: ScrollState,
     artworkSlot: MutableState<Rect?>,
     hostCoordinates: Array<LayoutCoordinates?>,
+    tier: WindowTier,
+    isPreview: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val reportArtworkSlot = Modifier.onGloballyPositioned { slot ->
@@ -282,16 +352,21 @@ private fun ExpandedPlayer(
     }
     val stream = state.stream
     val empty = stream.source == PlaybackSource.NONE
-    val canSave = stream.source == PlaybackSource.BOT
+    val canSave = !isPreview && stream.source == PlaybackSource.BOT
     val currentPlayerSourceKey = playerSourceKey(stream)
     val matchingBotDownload = state.downloads.firstOrNull { it.sourceBotFileId == stream.botFileId }
     val saving = state.preparingPlayerSaveSourceKey == currentPlayerSourceKey || matchingBotDownload != null
     val saveProgressText = matchingBotDownload?.let(::libraryDownloadProgressText)
-    Column(
-        modifier.fillMaxSize().padding(AppDimens.itemSpacing)
+    Box(
+        modifier.fillMaxSize()
             .then(if (empty) Modifier.testTag("streamEmptyPlayer") else Modifier),
-        verticalArrangement = Arrangement.spacedBy(AppDimens.selectionBadgeInset),
+        contentAlignment = Alignment.TopCenter,
     ) {
+      Column(
+        Modifier.widthIn(max = AppDimens.maxFormWidth).fillMaxWidth()
+            .padding(horizontal = AppDimens.contentHorizontalPadding(tier), vertical = AppDimens.itemSpacing),
+        verticalArrangement = Arrangement.spacedBy(AppDimens.selectionBadgeInset),
+      ) {
         Row(
             Modifier.fillMaxWidth().height(PlayerHeaderHeight).testTag("streamPlayerHeader"),
             verticalAlignment = Alignment.CenterVertically,
@@ -352,7 +427,7 @@ private fun ExpandedPlayer(
                     busy = saving, stateDescription = saveProgressText,
                 )
             }
-            if (!empty) PlayerIconAction("다른 앱으로 재생", R.drawable.ic_media_external, actions::onExternalPlayStream,
+            if (!empty && !isPreview) PlayerIconAction("다른 앱으로 재생", R.drawable.ic_media_external, actions::onExternalPlayStream,
                 modifier = Modifier.testTag("streamExternalPlay"))
             PlayerIconAction("재생목록", R.drawable.ic_media_queue, actions::onShowQueue,
                 modifier = Modifier.testTag("streamQueue"))
@@ -362,6 +437,7 @@ private fun ExpandedPlayer(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.fillMaxWidth().testTag("streamSaveProgress"),
         )
+      }
     }
 }
 
@@ -411,50 +487,74 @@ private fun PlayerTimeline(
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun PlayerTransportGroup(state: AppUiState, actions: AppActions, modifier: Modifier = Modifier) {
+internal fun PlayerTransportGroup(state: AppUiState, actions: AppActions, modifier: Modifier = Modifier) {
     val stream = state.stream
+    val enabled = canUsePlayerTransport(stream)
     val previousSource = remember { MutableInteractionSource() }
     val nextSource = remember { MutableInteractionSource() }
     val backSource = remember { MutableInteractionSource() }
     val playSource = remember { MutableInteractionSource() }
     val forwardSource = remember { MutableInteractionSource() }
-    val enabled = stream.error == null && stream.ready && !stream.resolving
     val position = playerPosition(stream)
     val back = (position - 10_000L).coerceAtLeast(0L)
     val requestedForward = if (position > Long.MAX_VALUE - 10_000L) Long.MAX_VALUE else position + 10_000L
     val forward = if (stream.durationMs > 0L) requestedForward.coerceAtMost(stream.durationMs) else requestedForward
-    ButtonGroup(
-        modifier = modifier.fillMaxWidth().testTag("streamPlayerTransportRow"),
-        overflowIndicator = { },
-        horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        // 4 x 56dp actions + 80dp transport + 4 x 4dp gaps = 320dp, within the 328dp phone content width.
-        customItem(buttonGroupContent = {
-            PlayerIconAction("10초 뒤로", R.drawable.ic_media_seek_back_10, { actions.onSeek(back) },
-                modifier = Modifier.animateWidth(backSource).size(IconButtonDefaults.mediumContainerSize()).testTag("streamSeekBack10"),
-                enabled = enabled, interactionSource = backSource, iconSize = 28.dp)
-        }, menuContent = { })
-        customItem(buttonGroupContent = {
-            PlayerIconAction("이전", R.drawable.ic_media_skip_previous, actions::onPlayPrevious,
-                modifier = Modifier.animateWidth(previousSource).size(IconButtonDefaults.mediumContainerSize()).testTag("streamPrevious"),
-                enabled = enabled && ((if (state.queueIndex >= 0) state.queueIndex else state.queueResumeIndex) > 0 || position > 3_000L), interactionSource = previousSource, iconSize = 28.dp)
-        }, menuContent = { })
-        customItem(buttonGroupContent = {
-            PlayerTransport(stream, actions, modifier = Modifier.animateWidth(playSource),
-                large = true, interactionSource = playSource)
-        }, menuContent = { })
-        customItem(buttonGroupContent = {
-            PlayerIconAction("다음", R.drawable.ic_media_skip_next, actions::onPlayNext,
-                modifier = Modifier.animateWidth(nextSource).size(IconButtonDefaults.mediumContainerSize()).testTag("streamNext"),
-                enabled = enabled && (if (state.queueIndex >= 0) state.queueIndex + 1 else state.queueResumeIndex) in state.queue.indices,
-                interactionSource = nextSource, iconSize = 28.dp)
-        }, menuContent = { })
-        customItem(buttonGroupContent = {
-            PlayerIconAction("10초 앞으로", R.drawable.ic_media_seek_forward_10, { actions.onSeek(forward) },
-                modifier = Modifier.animateWidth(forwardSource).size(IconButtonDefaults.mediumContainerSize()).testTag("streamSeekForward10"),
-                enabled = enabled, interactionSource = forwardSource, iconSize = 28.dp)
-        }, menuContent = { })
+    BoxWithConstraints(modifier.fillMaxWidth().testTag("streamPlayerTransportRow")) {
+        // Keep a single row and preserve 48dp button targets whenever the row can fit them.
+        val naturalActionSize = IconButtonDefaults.mediumContainerSize()
+        val naturalWidth = naturalActionSize.width * 4 + 80.dp + 4.dp * 4
+        // Fit in whole pixels: Row rounds each button and gap, so the sum must use the same rounding.
+        val fitWidth = constraints.maxWidth
+        val nominalScale = (maxWidth / naturalWidth).coerceIn(0f, 1f)
+        val pixelDensity = LocalDensity.current
+        fun fittedWidth(scale: Float): Int = with(pixelDensity) {
+            val side = maxOf((naturalActionSize.width * scale).roundToPx(), 48.dp.roundToPx())
+            val play = maxOf((80.dp * scale).roundToPx(), 48.dp.roundToPx())
+            side * 4 + play + (4.dp * scale).roundToPx() * 4
+        }
+        val minimumTargetScale = 0.6f // At this scale all five visual sizes are at most 48dp.
+        val minimumTargetWidth = fittedWidth(minimumTargetScale)
+        val uniformFallback = fitWidth < minimumTargetWidth
+        // Last resort below five 48dp targets: shrink by a small extra margin to absorb rounding.
+        val fallbackScale = ((fitWidth - 4).coerceAtLeast(0).toFloat() / minimumTargetWidth).coerceIn(0f, 1f)
+        val scale = if (uniformFallback) {
+            minimumTargetScale * fallbackScale
+        } else if (fittedWidth(nominalScale) > fitWidth) {
+            var low = minimumTargetScale
+            var high = nominalScale
+            repeat(24) {
+                val mid = (low + high) / 2f
+                if (fittedWidth(mid) <= fitWidth) low = mid else high = mid
+            }
+            if (fittedWidth(low) <= fitWidth && low > 0f) low else nominalScale
+        } else nominalScale
+        val targetFloor = if (uniformFallback) 48.dp * fallbackScale else 48.dp
+        val sideLayoutSize = maxOf(naturalActionSize.width * scale, targetFloor)
+        val playLayoutSize = maxOf(80.dp * scale, targetFloor)
+        val actionSize = Modifier.size(sideLayoutSize, sideLayoutSize)
+        CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides targetFloor) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(4.dp * scale, Alignment.CenterHorizontally),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                PlayerIconAction("10초 뒤로", R.drawable.ic_media_seek_back_10, { actions.onSeek(back) },
+                    modifier = actionSize.align(Alignment.CenterVertically).testTag("streamSeekBack10"),
+                    enabled = enabled, interactionSource = backSource, iconSize = 28.dp * scale)
+                PlayerIconAction("이전", R.drawable.ic_media_skip_previous, actions::onPlayPrevious,
+                    modifier = actionSize.align(Alignment.CenterVertically).testTag("streamPrevious"),
+                    enabled = canPlayPrevious(state, position), interactionSource = previousSource, iconSize = 28.dp * scale)
+                PlayerTransport(stream, actions, modifier = Modifier.align(Alignment.CenterVertically).size(playLayoutSize),
+                    large = true, interactionSource = playSource, scale = scale)
+                PlayerIconAction("다음", R.drawable.ic_media_skip_next, actions::onPlayNext,
+                    modifier = actionSize.align(Alignment.CenterVertically).testTag("streamNext"),
+                    enabled = canPlayNext(state),
+                    interactionSource = nextSource, iconSize = 28.dp * scale)
+                PlayerIconAction("10초 앞으로", R.drawable.ic_media_seek_forward_10, { actions.onSeek(forward) },
+                    modifier = actionSize.align(Alignment.CenterVertically).testTag("streamSeekForward10"),
+                    enabled = enabled, interactionSource = forwardSource, iconSize = 28.dp * scale)
+            }
+        }
     }
 }
 
@@ -466,6 +566,7 @@ private fun PlayerTransport(
     modifier: Modifier = Modifier,
     large: Boolean = false,
     interactionSource: MutableInteractionSource? = null,
+    scale: Float = 1f,
 ) {
     val label = when {
         stream.playing -> "일시정지"
@@ -480,16 +581,16 @@ private fun PlayerTransport(
             checked = stream.playing,
             onCheckedChange = { if (it) actions.onResume() else actions.onPause() },
             shapes = IconButtonDefaults.toggleableShapes(),
-            modifier = modifier.then(if (large) Modifier.size(80.dp) else Modifier.size(IconButtonDefaults.mediumContainerSize()))
+            modifier = modifier.then(if (large) Modifier.size(80.dp * scale) else Modifier.size(IconButtonDefaults.mediumContainerSize()))
                 .semantics { contentDescription = label; stateDescription = playerStatus(stream) }
                 .testTag("streamTransport"),
-            enabled = stream.error == null && stream.ready && !stream.resolving,
+            enabled = canUsePlayerTransport(stream),
             interactionSource = interactionSource,
         ) {
             Crossfade(stream.playing, animationSpec = MaterialTheme.motionScheme.defaultEffectsSpec(),
                 label = "playerTransportIcon") { playing ->
                 Icon(painterResource(if (playing) R.drawable.ic_media_pause else R.drawable.ic_media_play), null,
-                    Modifier.size(if (large) IconButtonDefaults.largeIconSize else IconButtonDefaults.mediumIconSize))
+                    Modifier.size((if (large) IconButtonDefaults.largeIconSize else IconButtonDefaults.mediumIconSize) * scale))
             }
         }
     }
@@ -533,6 +634,17 @@ private fun playerStatus(stream: StreamingState): String = when {
 private fun playerPosition(stream: StreamingState): Long =
     if (stream.durationMs > 0L) stream.positionMs.coerceIn(0L, stream.durationMs)
     else stream.positionMs.coerceAtLeast(0L)
+
+internal fun canUsePlayerTransport(stream: StreamingState): Boolean =
+    stream.error == null && stream.ready && !stream.resolving
+
+internal fun canPlayPrevious(state: AppUiState, position: Long = playerPosition(state.stream)): Boolean =
+    canUsePlayerTransport(state.stream) &&
+        ((if (state.queueIndex >= 0) state.queueIndex else state.queueResumeIndex) > 0 || position > 3_000L)
+
+internal fun canPlayNext(state: AppUiState): Boolean =
+    canUsePlayerTransport(state.stream) &&
+        (if (state.queueIndex >= 0) state.queueIndex + 1 else state.queueResumeIndex) in state.queue.indices
 
 private fun playerSourceKey(stream: StreamingState): String = when {
     stream.source == PlaybackSource.LOCAL_AUDIO -> stream.localAudioPath?.let { "local:${runCatching { File(it).canonicalPath }.getOrDefault(File(it).absolutePath)}" } ?: "local:invalid"

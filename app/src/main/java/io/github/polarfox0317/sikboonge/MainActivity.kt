@@ -4,7 +4,6 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.LaunchedEffect
@@ -13,6 +12,8 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.github.polarfox0317.sikboonge.security.AppLockActivity
 import io.github.polarfox0317.sikboonge.ui.shell.AppRoot
 import io.github.polarfox0317.sikboonge.ui.state.AppController
 import io.github.polarfox0317.sikboonge.ui.state.AppControllerFactory
@@ -20,12 +21,13 @@ import io.github.polarfox0317.sikboonge.ui.state.Destination
 import io.github.polarfox0317.sikboonge.ui.welcome.WelcomePreferences
 import io.github.polarfox0317.sikboonge.update.UpdateController
 
-class MainActivity : ComponentActivity() {
+class MainActivity : AppLockActivity() {
     private lateinit var controller: AppController
     private var incomingUri by mutableStateOf<String?>(null)
     private var incomingEventToken by mutableIntStateOf(0)
     private var openLibraryEventToken by mutableIntStateOf(0)
     private var openUpdateEventToken by mutableIntStateOf(0)
+    private var pendingOpenUpdateInstall by mutableStateOf(false)
     private var consumedOpenLibraryEventToken = 0
     private var consumedOpenUpdateEventToken = 0
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -49,26 +51,36 @@ class MainActivity : ComponentActivity() {
             incomingEventToken = savedInstanceState.getInt("incomingEventToken")
             openLibraryEventToken = savedInstanceState.getInt("openLibraryEventToken")
             openUpdateEventToken = savedInstanceState.getInt("openUpdateEventToken")
+            pendingOpenUpdateInstall = savedInstanceState.getBoolean("pendingOpenUpdateInstall")
             consumedOpenLibraryEventToken = savedInstanceState.getInt("consumedOpenLibraryEventToken")
             consumedOpenUpdateEventToken = savedInstanceState.getInt("consumedOpenUpdateEventToken")
         } else {
             accept(intent)
         }
         setContent {
+            val appLockState by appLockController.state.collectAsStateWithLifecycle()
             AppRoot(controller, forceWelcome = forceWelcome)
-            LaunchedEffect(incomingEventToken) {
+            LaunchedEffect(incomingEventToken, appLockState.locked) {
+                if (appLockController.state.value.locked) return@LaunchedEffect
                 controller.actions.onSharedIntent(incomingUri, incomingEventToken)
             }
-            LaunchedEffect(openLibraryEventToken) {
+            LaunchedEffect(openLibraryEventToken, appLockState.locked) {
+                if (appLockController.state.value.locked) return@LaunchedEffect
                 if (openLibraryEventToken > consumedOpenLibraryEventToken) {
                     consumedOpenLibraryEventToken = openLibraryEventToken
                     controller.actions.onTopLevelSelected(Destination.Library)
                 }
             }
-            LaunchedEffect(openUpdateEventToken) {
+            LaunchedEffect(openUpdateEventToken, appLockState.locked) {
+                if (appLockController.state.value.locked) return@LaunchedEffect
                 if (openUpdateEventToken > consumedOpenUpdateEventToken) {
                     consumedOpenUpdateEventToken = openUpdateEventToken
                     controller.actions.onOpenSettings()
+                    if (pendingOpenUpdateInstall) {
+                        pendingOpenUpdateInstall = false
+                        intent.removeExtra("open_update")
+                        UpdateController.installDownloadedUpdateFromNotification()
+                    }
                 }
             }
         }
@@ -78,6 +90,7 @@ class MainActivity : ComponentActivity() {
         outState.putInt("incomingEventToken", incomingEventToken)
         outState.putInt("openLibraryEventToken", openLibraryEventToken)
         outState.putInt("openUpdateEventToken", openUpdateEventToken)
+        outState.putBoolean("pendingOpenUpdateInstall", pendingOpenUpdateInstall)
         outState.putInt("consumedOpenLibraryEventToken", consumedOpenLibraryEventToken)
         outState.putInt("consumedOpenUpdateEventToken", consumedOpenUpdateEventToken)
         super.onSaveInstanceState(outState)
@@ -98,8 +111,7 @@ class MainActivity : ComponentActivity() {
         if (intent.getBooleanExtra("open_library", false)) openLibraryEventToken++
         if (intent.getBooleanExtra("open_update", false)) {
             openUpdateEventToken++
-            intent.removeExtra("open_update")
-            UpdateController.installDownloadedUpdateFromNotification()
+            pendingOpenUpdateInstall = true
         }
     }
 }

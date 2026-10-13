@@ -44,16 +44,19 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.polarfox0317.sikboonge.AudioFormat
 import io.github.polarfox0317.sikboonge.DownloadExecutionMode
+import io.github.polarfox0317.sikboonge.SystemMediaArtworkStore
 import io.github.polarfox0317.sikboonge.ThemeModeStore
 import io.github.polarfox0317.sikboonge.R
 import io.github.polarfox0317.sikboonge.ui.components.DisconnectDialog
 import io.github.polarfox0317.sikboonge.ui.components.FormColumn
 import io.github.polarfox0317.sikboonge.ui.components.SectionCard
 import io.github.polarfox0317.sikboonge.ui.components.ThemeModeSelector
+import io.github.polarfox0317.sikboonge.ui.security.LocalAppLockController
 import io.github.polarfox0317.sikboonge.ui.shell.LocalUpdateController
 import io.github.polarfox0317.sikboonge.ui.shell.ReleaseNotesBody
 import io.github.polarfox0317.sikboonge.ui.shell.releaseNotes
@@ -78,10 +81,13 @@ internal fun SettingsScreen(
     val botName = state.bot.botName?.takeIf(String::isNotBlank)
         ?: state.bot.username?.takeIf(String::isNotBlank)?.let { "@$it" }
     val context = LocalContext.current
+    remember(context) { SystemMediaArtworkStore.initialize(context) }
+    val systemMediaArtworkEnabled by SystemMediaArtworkStore.enabled.collectAsStateWithLifecycle()
     val updateController = LocalUpdateController.current
     val updateStatus by updateController.status.collectAsStateWithLifecycle()
     val autoCheckEnabled by updateController.autoCheckEnabled.collectAsStateWithLifecycle()
     val themeMode by ThemeModeStore.mode.collectAsStateWithLifecycle()
+    val appLockController = LocalAppLockController.current
 
     FormColumn(modifier.fillMaxSize().padding(contentPadding).consumeWindowInsets(contentPadding)) {
         SectionCard(
@@ -184,6 +190,85 @@ internal fun SettingsScreen(
                     selected = themeMode,
                     onSelect = { ThemeModeStore.set(context, it) },
                 )
+            },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        SectionCard(
+            title = { Text("보안") },
+            body = {
+                if (appLockController != null) {
+                    val appLockState by appLockController.state.collectAsStateWithLifecycle()
+                    Row(
+                        modifier = Modifier.fillMaxWidth()
+                            .heightIn(min = 64.dp)
+                            .toggleable(
+                                value = appLockState.enabled,
+                                enabled = !appLockState.authenticating,
+                                role = Role.Switch,
+                                onValueChange = { appLockController.requestEnabled(!appLockState.enabled) },
+                            )
+                            .testTag("settingsAppLock"),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f).padding(end = AppDimens.itemSpacing)) {
+                            Text("앱 잠금", style = MaterialTheme.typography.bodyLarge)
+                            Text(
+                                "앱을 다시 열 때 기기에 등록된 지문·얼굴 또는 PIN·패턴·비밀번호로 잠금을 해제해요.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = appLockState.enabled,
+                            onCheckedChange = null,
+                            enabled = !appLockState.authenticating,
+                        )
+                    }
+                    if (!appLockState.deviceSecure) {
+                        Text(
+                            "화면 잠금을 먼저 설정해 주세요.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        TextButton(
+                            onClick = appLockController::openSecuritySettings,
+                            modifier = Modifier.heightIn(min = 48.dp),
+                        ) {
+                            Text("기기 잠금 설정")
+                        }
+                    }
+                    appLockState.message?.takeIf(String::isNotBlank)?.let { message ->
+                        Text(
+                            message,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth()
+                        .heightIn(min = 64.dp)
+                        .toggleable(
+                            value = systemMediaArtworkEnabled,
+                            role = Role.Switch,
+                            onValueChange = { SystemMediaArtworkStore.set(context, it) },
+                        )
+                        .testTag("settingsSystemMediaArtwork"),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f).padding(end = AppDimens.itemSpacing)) {
+                        Text("시스템 미디어 썸네일", style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            "켜면 재생 알림과 잠금 화면의 미디어 플레이어에 썸네일을 표시해요.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = systemMediaArtworkEnabled,
+                        onCheckedChange = null,
+                    )
+                }
             },
             modifier = Modifier.fillMaxWidth(),
         )

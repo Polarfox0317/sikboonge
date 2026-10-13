@@ -182,7 +182,9 @@ class AppController(
                     (botState.value.videos.any { it.fileId == stream.botFileId && queueItem(it).key == botQueueKey } ||
                         selectedBotQueueKey != null)
                 val keepPlayerSize = key == preservePlayerSizeSourceKey || sameQueuedBotMessage
-                if (keepPlayerSize || sourceChanged) clearQueuePlaybackPreference()
+                // Keep the queued identity through TDLib resolution; it may replace fileId after
+                // this first source publication, and the resolved state still owns the size handoff.
+                if ((keepPlayerSize || sourceChanged) && !stream.resolving) clearQueuePlaybackPreference()
                 if (sourceChanged) {
                     lastPlayerSourceKey = key
                     interaction.update { input ->
@@ -754,9 +756,16 @@ class AppController(
         if (!video.needsForward) appendQueueItem(queueItem(video))
     }
     private fun appendQueueItem(item: QueueItemUi) {
-        val queue = interaction.value.queue
-        val present = queue.any { it.key == item.key }
-        if (!present) interaction.update { it.copy(queue = appendQueueEntry(it.queue, item)) }
+        val present = interaction.value.queue.any { it.key == item.key }
+        if (!present) interaction.update { input ->
+            val wasIdleAndEmpty = StreamPlayback.state.value.source == PlaybackSource.NONE &&
+                input.queue.isEmpty() && input.queueIndex < 0
+            input.copy(
+                queue = appendQueueEntry(input.queue, item),
+                emptyPlayerVisible = input.emptyPlayerVisible || wasIdleAndEmpty,
+                playerExpanded = if (wasIdleAndEmpty) false else input.playerExpanded,
+            )
+        }
         notice(if (present) "이미 재생목록에 있어요" else "재생목록에 추가했어요")
     }
 
@@ -869,7 +878,17 @@ class AppController(
     }
 
     override fun onPause() = StreamPlayback.pause()
-    override fun onResume() = StreamPlayback.resume()
+    override fun onResume() {
+        val stream = StreamPlayback.state.value
+        if (stream.resolving) return
+        if (stream.source == PlaybackSource.NONE && interaction.value.emptyPlayerVisible) {
+            val queue = interaction.value
+            val previewIndex = queue.queueResumeIndex.takeIf { it in queue.queue.indices } ?: 0
+            playQueueItem(previewIndex, direction = 1)
+        } else {
+            StreamPlayback.resume()
+        }
+    }
     override fun onStop() {
         clearQueuePlaybackPreference()
         interaction.update { it.copy(emptyPlayerVisible = false, queueIndex = -1, queueResumeIndex = 0, queueVisible = false, queueEditing = false, queueSelectedKeys = emptySet()) }

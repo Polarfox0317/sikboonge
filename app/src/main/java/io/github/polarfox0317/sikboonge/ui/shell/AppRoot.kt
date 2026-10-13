@@ -21,6 +21,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.polarfox0317.sikboonge.ThemeMode
 import io.github.polarfox0317.sikboonge.ThemeModeStore
+import io.github.polarfox0317.sikboonge.security.AppLockActivity
+import io.github.polarfox0317.sikboonge.ui.security.AppLockGate
 import io.github.polarfox0317.sikboonge.ui.state.AppActions
 import io.github.polarfox0317.sikboonge.ui.state.AppController
 import io.github.polarfox0317.sikboonge.ui.state.AppUiState
@@ -42,6 +44,8 @@ internal fun AppRoot(
     forceWelcome: Boolean = false,
 ) {
     val context = LocalContext.current
+    val appLockController = (context as? AppLockActivity)?.appLockController
+    val appLockState = appLockController?.state?.collectAsStateWithLifecycle()?.value
     UpdateController.initialize(context)
     ThemeModeStore.initialize(context)
     val themeMode by ThemeModeStore.mode.collectAsStateWithLifecycle()
@@ -68,7 +72,8 @@ internal fun AppRoot(
     LaunchedEffect(UpdateController, stateOverride == null) {
         if (stateOverride == null) UpdateController.checkAtStartupOnce()
     }
-    LaunchedEffect(activityLaunch?.id) {
+    LaunchedEffect(activityLaunch?.id, appLockState?.locked) {
+        if (appLockState?.locked == true) return@LaunchedEffect
         val request = activityLaunch ?: return@LaunchedEffect
         UpdateController.markActivityLaunchDispatched(request)
         runCatching { installerLauncher.launch(UpdateController.activityIntent(request)) }
@@ -81,43 +86,45 @@ internal fun AppRoot(
             mutableStateOf(stateOverride == null && (forceWelcome || WelcomePreferences.shouldShow(context)))
         }
         CompositionLocalProvider(LocalUpdateController provides UpdateController) {
-            Box {
-                if (showWelcome) {
-                    val welcomeState by controller.uiState.collectAsStateWithLifecycle()
-                    WelcomeGuide(
-                        state = welcomeState,
-                        actions = controller.actions,
-                        onFinished = {
-                            WelcomePreferences.markCompleted(context)
-                            showWelcome = false
-                            controller.actions.onTopLevelSelected(Destination.Bot)
-                        },
-                        modifier = androidx.compose.ui.Modifier.fillMaxSize(),
-                    )
-                } else {
-                    AppShell(
-                        controller,
-                        host,
-                        stateOverride = stateOverride,
-                        actionsOverride = actionsOverride,
-                    )
-                    if (stateOverride == null && pendingChangelog != null) {
-                        UpdateCompletedDialog(requireNotNull(pendingChangelog), UpdateController::acknowledgeChangelog)
-                    } else if (stateOverride == null) {
-                        val available = updateStatus as? UpdateStatus.Available
-                        if (available != null && available.promptOnLaunch) {
-                            UpdateAvailableDialog(
-                                release = available.release,
-                                installedVersion = available.installedVersion,
-                                onDismiss = UpdateController::dismissLaunchPrompt,
-                                onUpdate = {
-                                    UpdateController.dismissLaunchPrompt()
-                                    controller.actions.onRequestNotificationPermissionThen {
-                                        UpdateController.downloadAndInstall()
-                                    }
-                                },
-                                onSkip = UpdateController::skipLaunchPromptForVersion,
-                            )
+            AppLockGate(appLockController) {
+                Box {
+                    if (showWelcome) {
+                        val welcomeState by controller.uiState.collectAsStateWithLifecycle()
+                        WelcomeGuide(
+                            state = welcomeState,
+                            actions = controller.actions,
+                            onFinished = {
+                                WelcomePreferences.markCompleted(context)
+                                showWelcome = false
+                                controller.actions.onTopLevelSelected(Destination.Bot)
+                            },
+                            modifier = androidx.compose.ui.Modifier.fillMaxSize(),
+                        )
+                    } else {
+                        AppShell(
+                            controller,
+                            host,
+                            stateOverride = stateOverride,
+                            actionsOverride = actionsOverride,
+                        )
+                        if (stateOverride == null && pendingChangelog != null) {
+                            UpdateCompletedDialog(requireNotNull(pendingChangelog), UpdateController::acknowledgeChangelog)
+                        } else if (stateOverride == null) {
+                            val available = updateStatus as? UpdateStatus.Available
+                            if (available != null && available.promptOnLaunch) {
+                                UpdateAvailableDialog(
+                                    release = available.release,
+                                    installedVersion = available.installedVersion,
+                                    onDismiss = UpdateController::dismissLaunchPrompt,
+                                    onUpdate = {
+                                        UpdateController.dismissLaunchPrompt()
+                                        controller.actions.onRequestNotificationPermissionThen {
+                                            UpdateController.downloadAndInstall()
+                                        }
+                                    },
+                                    onSkip = UpdateController::skipLaunchPromptForVersion,
+                                )
+                            }
                         }
                     }
                 }

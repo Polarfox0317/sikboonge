@@ -2,6 +2,7 @@ package io.github.polarfox0317.sikboonge.ui.shell
 
 import androidx.annotation.DrawableRes
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -177,7 +178,8 @@ internal fun AppShell(
         else railState.collapse()
     }
     val playerVisible = state.emptyPlayerVisible || state.stream.isPlayerVisible()
-    val miniReserve = if (playerVisible && !state.playerExpanded) MiniPlayerContentHeight else 0.dp
+    val playerShown = playerVisible && state.destination != Destination.Settings
+    val miniReserve = if (playerShown && !state.playerExpanded) MiniPlayerContentHeight else 0.dp
     val selectionReserve = if (state.selectionMode) SelectionToolbarContentHeight else 0.dp
     val messages = rememberShellMessages(controller, state)
     val imeVisible = WindowInsets.isImeVisible
@@ -202,6 +204,7 @@ internal fun AppShell(
     val effectsSpec = MaterialTheme.motionScheme.defaultEffectsSpec<Float>()
     val destinationShift = with(LocalDensity.current) { AppDimens.itemSpacing.roundToPx() }
     val direction = LocalLayoutDirection.current
+    var scaffoldPadding by remember { mutableStateOf<PaddingValues>(PaddingValues(0.dp)) }
 
     Row(modifier.fillMaxSize()) {
         if (tier != WindowTier.Compact) {
@@ -240,143 +243,129 @@ internal fun AppShell(
                 }
             }
         }
-        Scaffold(
-            modifier = Modifier.weight(1f).imePadding(),
-            topBar = {
-                ShellTopBar(
-                    state = state,
-                    actions = actions,
-                    scrollBehavior = scrollBehavior,
-                    menuExpanded = menuExpanded,
-                    onMenuExpandedChange = { menuExpanded = it },
-                    menuGroups = groups,
-                )
-            },
-            bottomBar = {
-                if (tier == WindowTier.Compact) {
-                    ShortNavigationBar(modifier = Modifier.testTag("mainNavigationBar")) {
-                        ShellDestinations.forEach { destination ->
-                            ShortNavigationBarItem(
-                                selected = state.topLevelDestination == destination.route,
-                                onClick = { selectDestination(destination.route) },
-                                icon = { Icon(painterResource(destination.icon), contentDescription = null) },
-                                label = { Text(destination.label) },
-                                modifier = Modifier.testTag(destination.tag),
-                            )
+        Box(Modifier.weight(1f).imePadding()) {
+            Scaffold(
+                modifier = Modifier.fillMaxSize(),
+                topBar = {
+                    ShellTopBar(
+                        state = state,
+                        actions = actions,
+                        scrollBehavior = scrollBehavior,
+                        menuExpanded = menuExpanded,
+                        onMenuExpandedChange = { menuExpanded = it },
+                        menuGroups = groups,
+                    )
+                },
+                bottomBar = {
+                    if (tier == WindowTier.Compact) {
+                        ShortNavigationBar(modifier = Modifier.testTag("mainNavigationBar")) {
+                            ShellDestinations.forEach { destination ->
+                                ShortNavigationBarItem(
+                                    selected = state.topLevelDestination == destination.route,
+                                    onClick = { selectDestination(destination.route) },
+                                    icon = { Icon(painterResource(destination.icon), contentDescription = null) },
+                                    label = { Text(destination.label) },
+                                    modifier = Modifier.testTag(destination.tag),
+                                )
+                            }
                         }
                     }
-                }
-            },
-            snackbarHost = {
-                Column(
-                    Modifier.padding(
-                        start = AppDimens.contentHorizontalPadding(tier),
-                        end = AppDimens.contentHorizontalPadding(tier),
-                        bottom = miniReserve + selectionReserve,
-                    ),
-                    verticalArrangement = Arrangement.spacedBy(AppDimens.itemSpacing),
+                },
+            ) { innerPadding ->
+                // Snapshot Scaffold's mutable padding so sibling overlays observe bar height changes.
+                scaffoldPadding = PaddingValues(
+                    start = innerPadding.calculateStartPadding(direction),
+                    top = innerPadding.calculateTopPadding(),
+                    end = innerPadding.calculateEndPadding(direction),
+                    bottom = innerPadding.calculateBottomPadding(),
+                )
+                val screenPadding = PaddingValues(
+                    start = innerPadding.calculateStartPadding(direction),
+                    top = innerPadding.calculateTopPadding(),
+                    end = innerPadding.calculateEndPadding(direction),
+                    bottom = innerPadding.calculateBottomPadding() + miniReserve + selectionReserve,
+                )
+                Box(
+                    Modifier.fillMaxSize().consumeWindowInsets(innerPadding)
+                        .nestedScroll(scrollBehavior.nestedScrollConnection),
                 ) {
-                    if (messages.progress.current != null) {
-                        MessageHost(
-                            messages.progress,
-                            Modifier.testTag(if (messages.notice.current == null) "conversionFeedback" else "conversionProgressFeedback"),
-                        )
-                    }
-                    if (messages.notice.current != null) {
-                        MessageHost(messages.notice, Modifier.testTag("conversionFeedback"))
-                    }
-                    if (messages.stream.current != null) {
-                        MessageHost(messages.stream, Modifier.testTag("streamTransientError"))
-                    }
-                }
-            },
-        ) { innerPadding ->
-            val screenPadding = PaddingValues(
-                start = innerPadding.calculateStartPadding(direction),
-                top = innerPadding.calculateTopPadding(),
-                end = innerPadding.calculateEndPadding(direction),
-                bottom = innerPadding.calculateBottomPadding() + miniReserve + selectionReserve,
-            )
-            Box(
-                Modifier.fillMaxSize().consumeWindowInsets(innerPadding)
-                    .nestedScroll(scrollBehavior.nestedScrollConnection),
-            ) {
-                AnimatedContent(
-                    targetState = state.destination,
-                    transitionSpec = {
-                        val sign = if (targetState.order() >= initialState.order()) 1 else -1
-                        (fadeIn(effectsSpec) + slideInHorizontally(spatialSpec) { sign * destinationShift })
-                            .togetherWith(fadeOut(effectsSpec) + slideOutHorizontally(spatialSpec) { -sign * destinationShift })
-                    },
-                    modifier = Modifier.fillMaxSize(),
-                    contentKey = { it.key() },
-                    label = "appDestination",
-                ) { destination ->
-                    Box(Modifier.fillMaxSize().then(
-                        if (destination != state.destination) Modifier.clearAndSetSemantics { } else Modifier,
-                    )) {
-                        savedScreens.SaveableStateProvider(destination.key()) {
-                            val reselection = when (destination) {
-                                Destination.Convert -> convertReselection
-                                Destination.Library -> libraryReselection
-                                Destination.Bot -> botReselection
-                                Destination.Settings -> 0
-                            }
-                            val deliveredReselection = entryReselectionToken(reselection)
-                            when (destination) {
-                                Destination.Convert -> ConvertScreen(
-                                    state, actions,
-                                    modifier = Modifier.fillMaxSize().testTag("convertContent")
-                                        .semantics { stateDescription = if (imeVisible) "IME visible" else "IME hidden" },
-                                    contentPadding = screenPadding,
-                                    reselectionToken = deliveredReselection,
-                                )
-                                Destination.Library -> LibraryScreen(
-                                    state, actions, tier,
-                                    contentPadding = screenPadding,
-                                    reselectionToken = deliveredReselection,
-                                    onScrollJump = onAppBarScrollJump,
-                                )
-                                Destination.Bot -> BotScreen(
-                                    state, actions, tier,
-                                    contentPadding = screenPadding,
-                                    reselectionToken = deliveredReselection,
-                                    onScrollJump = onAppBarScrollJump,
-                                )
-                                Destination.Settings -> {
-                                    val settingsPages = rememberSaveableStateHolder()
-                                    AnimatedContent(
-                                        targetState = state.settingsPage,
-                                        contentKey = { it.saveableKey() },
-                                        transitionSpec = {
-                                            val sign = if (targetState.depth() >= initialState.depth()) 1 else -1
-                                            (fadeIn(effectsSpec) + slideInHorizontally(spatialSpec) { sign * destinationShift })
-                                                .togetherWith(fadeOut(effectsSpec) + slideOutHorizontally(spatialSpec) { -sign * destinationShift })
-                                        },
-                                        modifier = Modifier.fillMaxSize(),
-                                        label = "settingsPage",
-                                    ) { page ->
-                                        Box(Modifier.fillMaxSize().then(
-                                            if (page != state.settingsPage) Modifier.clearAndSetSemantics { } else Modifier,
-                                        )) {
-                                            settingsPages.SaveableStateProvider(page.saveableKey()) {
-                                                when (page) {
-                                                    SettingsPage.Root -> SettingsScreen(
-                                                        state, actions, tier, modifier = Modifier.fillMaxSize(), contentPadding = screenPadding,
-                                                    )
-                                                    SettingsPage.Licenses -> OpenSourceLicenseListScreen(
-                                                        onOpenLicense = actions::onOpenLicense,
-                                                        modifier = Modifier.fillMaxSize(), contentPadding = screenPadding,
-                                                    )
-                                                    is SettingsPage.LicenseDetail -> {
-                                                        val entry = OpenSourceLicenses.find(page.id)
-                                                        if (entry != null) OpenSourceLicenseDetailScreen(
-                                                            entry = entry, onFeedback = controller::onHostFeedback,
-                                                            modifier = Modifier.fillMaxSize(), contentPadding = screenPadding,
-                                                        ) else OpenSourceLicenseListScreen(
+                    AnimatedContent(
+                        targetState = state.destination,
+                        transitionSpec = {
+                            val sign = if (targetState.order() >= initialState.order()) 1 else -1
+                            (fadeIn(effectsSpec) + slideInHorizontally(spatialSpec) { sign * destinationShift })
+                                .togetherWith(fadeOut(effectsSpec) + slideOutHorizontally(spatialSpec) { -sign * destinationShift })
+                        },
+                        modifier = Modifier.fillMaxSize(),
+                        contentKey = { it.key() },
+                        label = "appDestination",
+                    ) { destination ->
+                        Box(Modifier.fillMaxSize().then(
+                            if (destination != state.destination) Modifier.clearAndSetSemantics { } else Modifier,
+                        )) {
+                            savedScreens.SaveableStateProvider(destination.key()) {
+                                val reselection = when (destination) {
+                                    Destination.Convert -> convertReselection
+                                    Destination.Library -> libraryReselection
+                                    Destination.Bot -> botReselection
+                                    Destination.Settings -> 0
+                                }
+                                val deliveredReselection = entryReselectionToken(reselection)
+                                when (destination) {
+                                    Destination.Convert -> ConvertScreen(
+                                        state, actions,
+                                        modifier = Modifier.fillMaxSize().testTag("convertContent")
+                                            .semantics { stateDescription = if (imeVisible) "IME visible" else "IME hidden" },
+                                        contentPadding = screenPadding,
+                                        reselectionToken = deliveredReselection,
+                                    )
+                                    Destination.Library -> LibraryScreen(
+                                        state, actions, tier,
+                                        contentPadding = screenPadding,
+                                        reselectionToken = deliveredReselection,
+                                        onScrollJump = onAppBarScrollJump,
+                                    )
+                                    Destination.Bot -> BotScreen(
+                                        state, actions, tier,
+                                        contentPadding = screenPadding,
+                                        reselectionToken = deliveredReselection,
+                                        onScrollJump = onAppBarScrollJump,
+                                    )
+                                    Destination.Settings -> {
+                                        val settingsPages = rememberSaveableStateHolder()
+                                        AnimatedContent(
+                                            targetState = state.settingsPage,
+                                            contentKey = { it.saveableKey() },
+                                            transitionSpec = {
+                                                val sign = if (targetState.depth() >= initialState.depth()) 1 else -1
+                                                (fadeIn(effectsSpec) + slideInHorizontally(spatialSpec) { sign * destinationShift })
+                                                    .togetherWith(fadeOut(effectsSpec) + slideOutHorizontally(spatialSpec) { -sign * destinationShift })
+                                            },
+                                            modifier = Modifier.fillMaxSize(),
+                                            label = "settingsPage",
+                                        ) { page ->
+                                            Box(Modifier.fillMaxSize().then(
+                                                if (page != state.settingsPage) Modifier.clearAndSetSemantics { } else Modifier,
+                                            )) {
+                                                settingsPages.SaveableStateProvider(page.saveableKey()) {
+                                                    when (page) {
+                                                        SettingsPage.Root -> SettingsScreen(
+                                                            state, actions, tier, modifier = Modifier.fillMaxSize(), contentPadding = screenPadding,
+                                                        )
+                                                        SettingsPage.Licenses -> OpenSourceLicenseListScreen(
                                                             onOpenLicense = actions::onOpenLicense,
                                                             modifier = Modifier.fillMaxSize(), contentPadding = screenPadding,
                                                         )
+                                                        is SettingsPage.LicenseDetail -> {
+                                                            val entry = OpenSourceLicenses.find(page.id)
+                                                            if (entry != null) OpenSourceLicenseDetailScreen(
+                                                                entry = entry, onFeedback = controller::onHostFeedback,
+                                                                modifier = Modifier.fillMaxSize(), contentPadding = screenPadding,
+                                                            ) else OpenSourceLicenseListScreen(
+                                                                onOpenLicense = actions::onOpenLicense,
+                                                                modifier = Modifier.fillMaxSize(), contentPadding = screenPadding,
+                                                            )
+                                                        }
                                                     }
                                                 }
                                             }
@@ -386,30 +375,57 @@ internal fun AppShell(
                             }
                         }
                     }
+                    if (state.selectionMode) {
+                        SelectionToolbar(
+                            selectedCount = state.selectedCount(),
+                            allSelected = state.allVisibleSelected(),
+                            onToggleAll = actions::onSelectAllCurrentItems,
+                            onDelete = { state.requestSelectedDelete(actions) },
+                            onClose = actions::onClearSelection,
+                            modifier = Modifier.align(Alignment.BottomCenter).padding(
+                                bottom = innerPadding.calculateBottomPadding() + miniReserve + AppDimens.itemSpacing,
+                            ),
+                        )
+                    }
                 }
-                // Kept outside destination composition so tab changes never recreate the player.
+            }
+            // Sibling overlays cover the app bar while leaving the navigation rail outside.
+            // Fully qualified: the enclosing Row scope would otherwise select RowScope.AnimatedVisibility.
+            androidx.compose.animation.AnimatedVisibility(
+                visible = state.destination != Destination.Settings,
+                enter = fadeIn(effectsSpec),
+                exit = fadeOut(effectsSpec),
+                modifier = Modifier.fillMaxSize(),
+            ) {
                 PlayerHost(
                     state = state,
                     actions = actions,
                     tier = tier,
-                    modifier = Modifier.fillMaxSize()
-                        .padding(
-                            top = innerPadding.calculateTopPadding(),
-                            bottom = if (state.playerExpanded) innerPadding.calculateBottomPadding() else 0.dp,
-                        ),
-                    miniBottomPadding = innerPadding.calculateBottomPadding(),
+                    modifier = Modifier.fillMaxSize().padding(
+                        bottom = if (state.playerExpanded) scaffoldPadding.calculateBottomPadding() else 0.dp,
+                    ),
+                    miniBottomPadding = scaffoldPadding.calculateBottomPadding(),
                 )
-                if (state.selectionMode) {
-                    SelectionToolbar(
-                        selectedCount = state.selectedCount(),
-                        allSelected = state.allVisibleSelected(),
-                        onToggleAll = actions::onSelectAllCurrentItems,
-                        onDelete = { state.requestSelectedDelete(actions) },
-                        onClose = actions::onClearSelection,
-                        modifier = Modifier.align(Alignment.BottomCenter).padding(
-                            bottom = innerPadding.calculateBottomPadding() + miniReserve + AppDimens.itemSpacing,
-                        ),
+            }
+            Column(
+                Modifier.align(Alignment.BottomCenter).padding(
+                    start = AppDimens.contentHorizontalPadding(tier),
+                    end = AppDimens.contentHorizontalPadding(tier),
+                    bottom = scaffoldPadding.calculateBottomPadding() + miniReserve + selectionReserve,
+                ),
+                verticalArrangement = Arrangement.spacedBy(AppDimens.itemSpacing),
+            ) {
+                if (messages.progress.current != null) {
+                    MessageHost(
+                        messages.progress,
+                        Modifier.testTag(if (messages.notice.current == null) "conversionFeedback" else "conversionProgressFeedback"),
                     )
+                }
+                if (messages.notice.current != null) {
+                    MessageHost(messages.notice, Modifier.testTag("conversionFeedback"))
+                }
+                if (messages.stream.current != null) {
+                    MessageHost(messages.stream, Modifier.testTag("streamTransientError"))
                 }
             }
         }
@@ -417,7 +433,7 @@ internal fun AppShell(
     NavigationBackHandler(
         state = backState,
         isBackEnabled = imeVisible || menuExpanded || state.selectionMode ||
-            (playerVisible && state.playerExpanded) || state.destination != Destination.Bot,
+            (playerShown && state.playerExpanded) || state.destination != Destination.Bot,
         onBackCompleted = {
             when {
                 imeVisible -> { keyboard?.hide(); focusManager.clearFocus() }
@@ -425,7 +441,7 @@ internal fun AppShell(
                 state.selectionMode -> actions.onClearSelection()
                 state.destination == Destination.Bot && state.botSetupRequested -> actions.onCloseBotSetup()
                 state.destination == Destination.Settings -> actions.onBack()
-                playerVisible && state.playerExpanded -> actions.setPlayerExpanded(false)
+                playerShown && state.playerExpanded -> actions.setPlayerExpanded(false)
                 else -> actions.onBack()
             }
         },

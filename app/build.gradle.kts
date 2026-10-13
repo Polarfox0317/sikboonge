@@ -23,8 +23,8 @@ android {
         applicationId = "io.github.polarfox0317.sikboonge"
         minSdk = 26
         targetSdk = 37
-        versionCode = 132
-        versionName = "1.1.1"
+        versionCode = 133
+        versionName = "1.1.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
     }

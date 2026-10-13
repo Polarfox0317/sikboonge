@@ -148,6 +148,15 @@ internal class DownloadProgressTracker(
         return snapshot(now)
     }
 
+    /** A fresh extraction attempt clears old range coverage and restarts progress below completion. */
+    @Synchronized
+    fun retryProcessing(platformDownloadedSize: Long? = null): DownloadMetrics {
+        uniqueBytes = 0L
+        ranges.clear()
+        restartProcessing(platformDownloadedSize)
+        return snapshot()
+    }
+
     private fun insertUniqueRange(start: Long, endExclusive: Long): Long {
         var mergedStart = start
         var mergedEnd = endExclusive

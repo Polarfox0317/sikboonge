@@ -1,0 +1,14 @@
+AndroidX Media3 1.9.3 - adapted Player.Listener forwarding code
+
+Copyright 2021 The Android Open Source Project
+License: Apache License 2.0. The complete text is bundled in Apache-2.0.txt.
+
+Original: ForwardingPlayer.ForwardingListener
+https://github.com/androidx/media/blob/1.9.3/libraries/common/src/main/java/androidx/media3/common/ForwardingPlayer.java
+
+Adapted file: SystemMediaArtworkListener.java
+Changes: extracted the listener into the application's package, replaced the
+ForwardingPlayer reference with Player, and filtered onMediaMetadataChanged
+through a UnaryOperator to apply the system artwork preference. The remaining
+player callbacks retain their forwarding behavior.
+The original copyright and Apache-2.0 header are retained in the adapted file.
