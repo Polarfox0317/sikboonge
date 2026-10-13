@@ -7,20 +7,13 @@ import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.LocalTextStyle
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.setValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.text.style.LineBreak
 
 @Composable
 internal fun ConfirmDeleteDialog(
@@ -58,10 +51,7 @@ internal fun RenameDialog(
     extension: String = "",
 ) {
     val draftState = rememberSaveable(initial, bot, extension, saver = TextFieldState.Saver) { TextFieldState(initial) }
-    var botDraft by rememberSaveable(initial, bot, extension, stateSaver = TextFieldValue.Saver) {
-        mutableStateOf(TextFieldValue(initial))
-    }
-    val draft = if (bot) botDraft.text else draftState.text.toString()
+    val draft = draftState.text.toString()
     val title = if (bot) draft.filterNot { Character.isISOControl(it) }.trim() else {
         val entered = draft.trim().trim('.')
         if (extension.isNotBlank() && entered.endsWith(".$extension", ignoreCase = true)) entered.dropLast(extension.length + 1) else entered
@@ -73,31 +63,14 @@ internal fun RenameDialog(
         modifier = modifier.testTag(prefix + "Dialog"),
         title = { Text(if (bot) "영상 제목 수정" else "파일 이름 수정") },
         text = {
-            if (bot) {
-                // VisualTransformation leaves Foundation's IME, copy/paste and key movement
-                // in the original title. OutputTransformation in Foundation 1.12 exposes
-                // inserted wrapping characters to those paths, so it is unsuitable here.
-                OutlinedTextField(
-                    value = botDraft,
-                    onValueChange = { botDraft = it },
-                    label = { Text("영상 제목") },
-                    minLines = 1,
-                    maxLines = 4,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                    textStyle = LocalTextStyle.current.copy(
-                        lineBreak = LineBreak.Simple.copy(strictness = LineBreak.Strictness.Loose),
-                    ),
-                    visualTransformation = GraphemeWrapVisualTransformation,
-                    supportingText = { if (title.isBlank()) Text("제목을 입력해 주세요.") },
-                    modifier = Modifier.fillMaxWidth().testTag(prefix + "Title"),
-                )
-            } else EdgeHoldOutlinedTextField(
+            EdgeHoldOutlinedTextField(
                 state = draftState,
-                label = { Text("파일 이름") },
+                label = { Text(if (bot) "영상 제목" else "파일 이름") },
                 lineLimits = TextFieldLineLimits.SingleLine,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                 supportingText = {
-                    if (extension.isNotBlank()) Text(".$extension 확장자는 유지돼요.")
+                    if (bot && title.isBlank()) Text("제목을 입력해 주세요.")
+                    else if (!bot && extension.isNotBlank()) Text(".$extension 확장자는 유지돼요.")
                 },
                 modifier = Modifier.fillMaxWidth().testTag(prefix + "Title"),
             )

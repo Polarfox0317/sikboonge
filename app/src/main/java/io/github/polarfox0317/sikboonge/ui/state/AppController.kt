@@ -891,7 +891,7 @@ class AppController(
     }
     override fun onStop() {
         clearQueuePlaybackPreference()
-        interaction.update { it.copy(emptyPlayerVisible = false, queueIndex = -1, queueResumeIndex = 0, queueVisible = false, queueEditing = false, queueSelectedKeys = emptySet()) }
+        interaction.update { it.copy(queue = emptyList(), emptyPlayerVisible = false, queueIndex = -1, queueResumeIndex = 0, queueVisible = false, queueEditing = false, queueSelectedKeys = emptySet()) }
         StreamPlayback.stop()
     }
     override fun onSeek(positionMs: Long) = StreamPlayback.seekTo(positionMs)

@@ -74,9 +74,15 @@ class StreamingAudioService : MediaSessionService() {
     private var leasedBotFileId: Int? = null
     private var botAccess: TdlibFileAccess = BotRuntime
     private var replacingMediaSource = false
+    private var terminalShutdown = false
 
     override fun onCreate() {
         super.onCreate()
+        initializePlaybackResources()
+    }
+
+    private fun initializePlaybackResources() {
+        terminalShutdown = false
         SystemMediaArtworkStore.initialize(this)
         val selector = DefaultTrackSelector(this).apply {
             parameters = buildUponParameters()
@@ -152,6 +158,26 @@ class StreamingAudioService : MediaSessionService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         AppDiagnostics.event("playback", "action=${intent?.action.orEmpty()}")
         val baseResult = super.onStartCommand(intent, flags, startId)
+        if (player == null) {
+            when (intent?.action) {
+                ACTION_PLAY_LOCAL -> {
+                    val requestedPath = intent.getStringExtra(EXTRA_LOCAL_AUDIO_PATH)
+                    val active = StreamPlayback.state.value
+                    if (active.source != PlaybackSource.LOCAL_AUDIO || active.localAudioPath != requestedPath) {
+                        return START_NOT_STICKY
+                    }
+                    initializePlaybackResources()
+                }
+                BotRuntime.ACTION_PLAY_TDLIB -> {
+                    val requestedFileId = intent.getIntExtra(BotRuntime.EXTRA_TDLIB_FILE_ID, 0)
+                    val active = StreamPlayback.state.value
+                    if (active.source != PlaybackSource.BOT || active.botFileId != requestedFileId) {
+                        return START_NOT_STICKY
+                    }
+                    initializePlaybackResources()
+                }
+            }
+        }
         when (intent?.action) {
             ACTION_PLAY_LOCAL -> beginLocalAudio(intent)
             BotRuntime.ACTION_PLAY_TDLIB -> beginBot(intent)
@@ -381,6 +407,9 @@ class StreamingAudioService : MediaSessionService() {
     }
 
     private fun stopPlayback() {
+        if (terminalShutdown) return
+        terminalShutdown = true
+        BotRuntime.cancelPendingPlayback()
         clearSystemArtworkSource()
         currentBotFileId = null
         currentLocalAudioPath = null
@@ -395,7 +424,23 @@ class StreamingAudioService : MediaSessionService() {
         player?.apply { stop(); clearMediaItems() }
         releaseBotLease()
         mainHandler.removeCallbacks(positionTicker)
+        releasePlaybackResources()
+        stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    private fun releasePlaybackResources() {
+        clearSystemArtworkSource()
+        mediaSessionScope?.cancel()
+        mediaSessionScope = null
+        mainHandler.removeCallbacks(positionTicker)
+        player?.removeListener(playerListener)
+        mediaSession?.release()
+        mediaSession = null
+        player?.release()
+        player = null
+        sessionPlayer = null
+        trackSelector = null
     }
 
     private fun fail(message: String) {
@@ -671,26 +716,17 @@ class StreamingAudioService : MediaSessionService() {
     }
 
     override fun onDestroy() {
-        clearSystemArtworkSource()
-        mediaSessionScope?.cancel()
-        mediaSessionScope = null
-        mainHandler.removeCallbacks(positionTicker)
-        player?.removeListener(playerListener)
-        StreamPlayback.publish(
-            StreamPlayback.state.value.copy(
+        val ownsActiveStream = !terminalShutdown && ownsPublishedSource(StreamPlayback.state.value)
+        releasePlaybackResources()
+        if (ownsActiveStream && ownsPublishedSource(StreamPlayback.state.value)) {
+            StreamPlayback.publish(StreamPlayback.state.value.copy(
                 resolving = false,
                 playing = false,
                 buffering = false,
                 ready = false
-            )
-        )
-        player?.release()
+            ))
+        }
         releaseBotLease()
-        player = null
-        sessionPlayer = null
-        mediaSession?.release()
-        mediaSession = null
-        trackSelector = null
         super.onDestroy()
     }
 
