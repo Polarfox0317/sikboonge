@@ -1381,12 +1381,25 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
 
     fun play(context: Context, video: BotVideo) {
         val requestGeneration = playbackRequestGeneration.issue()
+        StreamPlayback.beginBotResolution(context, video)
         io.execute {
-            resolveVideoFile(context.applicationContext, video) { resolved ->
+            resolveVideoFile(
+                context.applicationContext,
+                video,
+                onFailure = { message ->
+                    mainHandler.post {
+                        if (playbackRequestGeneration.isCurrent(requestGeneration)) {
+                            StreamPlayback.failBotResolution(video.fileId, message)
+                        }
+                    }
+                },
+            ) { resolved ->
                 mainHandler.post {
                     if (!playbackRequestGeneration.isCurrent(requestGeneration)) return@post
                     if (ready && !isMessageBlocked(resolved.chatId, resolved.messageId)) {
                         StreamPlayback.playBot(context, resolved)
+                    } else {
+                        StreamPlayback.failBotResolution(video.fileId, "봇 연결이 변경되어 영상을 재생하지 못했어요. 다시 시도해 주세요.")
                     }
                 }
             }

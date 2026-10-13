@@ -24,8 +24,9 @@ internal class ExternalAudioInputBridge private constructor(
     private val firstFailure = java.util.concurrent.atomic.AtomicReference<IncompleteMediaInputException?>(null)
     private val sockets = ConcurrentHashMap.newKeySet<Socket>()
     private val slots = Semaphore(4)
-    private val workerLock = Any()
+    private val workerLock = Object()
     private val workers = mutableSetOf<Thread>()
+    private var responseRequestsSealed = false
     private val closeFinished = java.util.concurrent.CountDownLatch(1)
 
     val isClosed: Boolean get() = closed.get()
@@ -34,6 +35,7 @@ internal class ExternalAudioInputBridge private constructor(
 
     /** Confirms a known-length bot input reached its advertised final byte after extraction. */
     fun verifyComplete(cancelled: () -> Boolean = { false }) {
+        awaitResponsesFinished(cancelled)
         failure()?.let { throw it }
         try {
             val verifiedBytes = source.verifyComplete(cancelled)
@@ -49,18 +51,59 @@ internal class ExternalAudioInputBridge private constructor(
         failure()?.let { throw it }
     }
 
+    /** FFmpeg may finish before a loopback worker reports that its HTTP body ended short. */
+    private fun awaitResponsesFinished(cancelled: () -> Boolean) {
+        synchronized(workerLock) {
+            responseRequestsSealed = true
+            runCatching { server.close() }
+            val deadlineNanos = System.nanoTime() + TimeUnit.SECONDS.toNanos(RESPONSE_DRAIN_TIMEOUT_SECONDS)
+            while ((workers.isNotEmpty() || sockets.isNotEmpty()) && !closed.get() && !cancelled()) {
+                val remainingNanos = deadlineNanos - System.nanoTime()
+                if (remainingNanos <= 0L) break
+                val waitMillis = TimeUnit.NANOSECONDS.toMillis(remainingNanos).coerceAtLeast(1L)
+                try {
+                    workerLock.wait(minOf(waitMillis, RESPONSE_DRAIN_WAIT_SLICE_MS))
+                } catch (interrupted: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    throw java.io.InterruptedIOException("Telegram audio input verification was interrupted").apply {
+                        initCause(interrupted)
+                    }
+                }
+            }
+            if (cancelled() || closed.get()) {
+                throw java.io.InterruptedIOException("Telegram audio input was cancelled")
+            }
+            if (workers.isNotEmpty() || sockets.isNotEmpty()) {
+                val incomplete = IncompleteMediaInputException(source.context)
+                firstFailure.compareAndSet(null, incomplete)
+                sockets.forEach { runCatching { it.close() } }
+                throw firstFailure.get() ?: incomplete
+            }
+        }
+    }
+
     init {
         Thread({
             while (!closed.get()) {
                 val socket = try { server.accept() } catch (_: Exception) { break }
                 if (!slots.tryAcquire()) { runCatching { socket.close() }; continue }
+                sockets.add(socket)
                 synchronized(workerLock) {
-                    if (closed.get()) { socket.close(); slots.release() }
+                    if (closed.get() || responseRequestsSealed) {
+                        sockets.remove(socket)
+                        socket.close()
+                        slots.release()
+                        workerLock.notifyAll()
+                    }
                     else {
-                        sockets.add(socket)
                         val worker = Thread({
                             try { serve(socket) } finally {
-                                synchronized(workerLock) { workers.remove(Thread.currentThread()) }
+                                sockets.remove(socket)
+                                slots.release()
+                                synchronized(workerLock) {
+                                    workers.remove(Thread.currentThread())
+                                    workerLock.notifyAll()
+                                }
                             }
                         }, "external-audio-input").apply { isDaemon = true }
                         workers.add(worker)
@@ -135,8 +178,6 @@ internal class ExternalAudioInputBridge private constructor(
             if (!closed.get() && error is IncompleteMediaInputException) firstFailure.compareAndSet(null, error)
             // Close the input socket; FFmpeg reports the source read failure to the session.
         } finally {
-            sockets.remove(socket)
-            slots.release()
             runCatching { socket.close() }
         }
     }
@@ -303,6 +344,8 @@ internal class ExternalAudioInputBridge private constructor(
     companion object {
         private const val MAX_HEADER_LINE_BYTES = 8192
         private const val SOURCE_READ_TIMEOUT_MS = 20_000
+        private const val RESPONSE_DRAIN_TIMEOUT_SECONDS = 25L
+        private const val RESPONSE_DRAIN_WAIT_SLICE_MS = 250L
         private const val FINAL_BYTE_CHECK_TIMEOUT_SECONDS = 10L
         private val RANGE = Regex("bytes=(\\d*)-(\\d*)", RegexOption.IGNORE_CASE)
 

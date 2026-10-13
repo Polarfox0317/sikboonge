@@ -88,6 +88,23 @@ data class AppUiState(
     val queueSelectedKeys: Set<String> = emptySet(),
     val queueResumeIndex: Int = 0,
 ) {
+    /** A presentation-only stopped selection; it never becomes a StreamPlayback service request. */
+    val playerPreview: QueueItemUi? get() = if (
+        stream.source == PlaybackSource.NONE && emptyPlayerVisible
+    ) queue.getOrNull(queueResumeIndex) ?: queue.firstOrNull() else null
+
+    val playerDisplayStream: StreamingState get() = playerPreview?.let { item ->
+        StreamingState(
+            source = item.sourceKind,
+            title = item.title,
+            ready = true,
+            botFileId = item.botFileId,
+            localAudioPath = item.localAudioPath,
+            artworkPath = item.artworkPath,
+            artworkBase64 = item.artworkBase64,
+        )
+    } ?: stream
+
     val preparingBotSaveMessageId: Long? get() = preparingBotSaveSources.keys.firstOrNull()
     val preparingBotSaveMessageIds: Set<Long> get() = preparingBotSaveSources.keys
     val preparingBotSaveFileIds: Set<Int> get() = preparingBotSaveSources.values.toSet()

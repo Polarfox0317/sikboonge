@@ -42,6 +42,13 @@ internal fun bundledChangelog(
         version = "1.1.1",
         releaseUrl = null,
     ).blocks
+    133L -> parseReleaseNotes(
+        body = CHANGELOG_1_1_2,
+        preferredLanguage = preferredLanguage,
+        releaseTitle = "싴붕이 1.1.2",
+        version = "1.1.2",
+        releaseUrl = null,
+    ).blocks
     else -> null
 }
 
@@ -157,4 +164,77 @@ private val CHANGELOG_1_1_1 = """
     - Fixed playback stopping instead of continuing to the next item in the queue.
     - Fixed long filenames and search queries not scrolling while holding the cursor handle at either edge.
     - Fixed the installer not opening when tapping the update download completion notification.
+""".trimIndent()
+
+// Approved bilingual release notes. Keep category order and wording unchanged.
+private val CHANGELOG_1_1_2 = """
+    # 싴붕이 1.1.2
+
+    ## 한국어
+
+    ### 검색 개선
+
+    - 한글 초성으로 봇 영상과 보관함의 오디오를 검색할 수 있어요.
+    - 초성과 일반 글자를 함께 입력했을 때도 검색할 수 있도록 개선했어요.
+
+    ### 보안 설정
+
+    - 기기에 등록된 지문·얼굴·PIN·패턴·비밀번호로 앱을 잠글 수 있어요.
+    - 설정에 보안 항목을 추가하고, 앱 잠금 안내 화면을 개선했어요.
+    - 보안 설정에서 시스템 미디어 컨트롤의 썸네일 표시를 켜거나 끌 수 있어요.
+
+    ### 재생 기능 개선
+
+    - 전체 플레이어에서 썸네일을 좌우로 밀어 이전·다음 곡으로 이동할 수 있어요. 옆 곡의 썸네일도 함께 움직여요.
+
+    ### 다운로드 안정성 개선
+
+    - 다운로드 입력이 불완전하게 끊기면 한 번 자동으로 다시 연결해 저장을 시도해요.
+    - 아직 받지 못한 파일 끝부분을 다운로드 완료로 처리하지 않도록 개선했어요.
+
+    ### 버그 수정
+
+    - 빈 재생목록에 첫 항목을 추가해도 미니 플레이어가 표시되지 않던 문제를 수정했어요. 이제 정지 상태의 미니 플레이어를 표시해요.
+    - 스트리밍 곡을 전환할 때 플레이어가 순간적으로 사라졌다 다시 나타나던 문제를 수정했어요.
+    - 좁은 화면에서 플레이어 버튼 배치로 앱이 종료되던 문제를 수정했어요.
+    - 전체 플레이어가 상단 제목과 부제목을 가리지 않던 문제를 수정했어요.
+    - 설정 화면이 전체 플레이어 뒤에 표시되던 문제를 수정했어요.
+
+    ### 오픈소스 라이선스
+
+    - es-hangul과 AndroidX Media3의 라이선스 안내를 추가했어요.
+
+    ## English
+
+    ### Search improvements
+
+    - Search bot videos and Library audio using Korean initial consonants.
+    - Improved searches that mix Korean initial consonants with regular characters.
+
+    ### Security settings
+
+    - Lock the app using the fingerprint, face, PIN, pattern, or password registered on your device.
+    - Added a Security section in Settings and improved the app lock screen.
+    - Turn thumbnail display in system media controls on or off in Security settings.
+
+    ### Playback improvements
+
+    - Swipe the artwork left or right in the expanded player to move to the previous or next track. The adjacent track's artwork moves with the gesture.
+
+    ### Download reliability improvements
+
+    - Saves automatically reconnect and retry once if the download input is interrupted before completion.
+    - Improved handling of missing file-tail data so it is not treated as a completed download.
+
+    ### Bug fixes
+
+    - Fixed the mini player not appearing when adding the first item to an empty queue. It now appears without starting playback.
+    - Fixed the player briefly disappearing and reappearing when switching streaming tracks.
+    - Fixed a playback button layout issue that could close the app in narrow windows.
+    - Fixed the expanded player leaving the app bar title and subtitle visible.
+    - Fixed Settings appearing behind the expanded player.
+
+    ### Open-source licenses
+
+    - Added license notices for es-hangul and AndroidX Media3.
 """.trimIndent()

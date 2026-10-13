@@ -2,6 +2,15 @@ sikboonge app-authored code, documentation, and project-owned branding:
 MIT License, Copyright (c) 2026 Polarfox0317; see the repository root LICENSE.
 Third-party components below retain their own terms; MIT does not replace them.
 
+es-hangul getChoseong, source revision 920119b, is adapted in HangulSearch.kt.
+Copyright (c) 2024 Viva Republica, Inc; MIT License.
+Full license: es-hangul.txt. Adaptation notice: notices/es-hangul-Port.txt.
+
+AndroidX Media3 1.9.3 ForwardingPlayer.ForwardingListener is adapted in
+SystemMediaArtworkListener.java.
+Copyright 2021 The Android Open Source Project; Apache License 2.0.
+Full license: Apache-2.0.txt. Adaptation notice: notices/Media3-PortedCode.txt.
+
 This application uses the Maven Central audio AAR:
 dev.ffmpegkit-maintained:ffmpeg-kit-audio:8.1.7
 FFmpegKit Audio package: LGPL-3.0, see LGPL-3.0.txt and GPL-3.0.txt.

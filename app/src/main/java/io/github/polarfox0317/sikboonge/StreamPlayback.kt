@@ -38,7 +38,8 @@ object StreamPlayback {
         appContext = context.applicationContext
         mutableState.value = StreamingState(
             source = PlaybackSource.BOT,
-            title = video.name,
+            title = video.displayName,
+            resolving = true,
             botFileId = video.fileId,
             sourceBytes = video.bytes,
             buffering = true,
@@ -48,10 +49,33 @@ object StreamPlayback {
         context.startService(Intent(context, StreamingAudioService::class.java)
             .setAction(BotRuntime.ACTION_PLAY_TDLIB)
             .putExtra(BotRuntime.EXTRA_TDLIB_FILE_ID, video.fileId)
-            .putExtra(BotRuntime.EXTRA_TDLIB_NAME, video.name)
+            .putExtra(BotRuntime.EXTRA_TDLIB_NAME, video.displayName)
             .putExtra(BotRuntime.EXTRA_TDLIB_SIZE, video.bytes)
             .putExtra(StreamingAudioService.EXTRA_ARTWORK_PATH, video.thumbnailPath)
             .putExtra(StreamingAudioService.EXTRA_ARTWORK_BASE64, video.thumbnailBase64))
+    }
+
+    /** Publish the selected identity while TDLib restores its file asynchronously. */
+    internal fun beginBotResolution(context: Context, video: BotVideo) {
+        requireMainThread()
+        appContext = context.applicationContext
+        mutableState.value = StreamingState(
+            source = PlaybackSource.BOT,
+            title = video.displayName,
+            resolving = true,
+            buffering = true,
+            botFileId = video.fileId,
+            sourceBytes = video.bytes,
+            artworkPath = video.thumbnailPath,
+            artworkBase64 = video.thumbnailBase64,
+        )
+    }
+
+    internal fun failBotResolution(fileId: Int, message: String) {
+        requireMainThread()
+        val current = mutableState.value
+        if (current.source != PlaybackSource.BOT || current.botFileId != fileId || !current.resolving) return
+        mutableState.value = current.copy(resolving = false, buffering = false, error = message)
     }
 
     fun playLocal(context: Context, result: AudioResult) {
@@ -87,6 +111,7 @@ object StreamPlayback {
         mutableState.value = StreamingState(
             source = PlaybackSource.LOCAL_AUDIO,
             title = title,
+            resolving = true,
             buffering = true,
             localAudioPath = file.absolutePath,
             localAudioMime = mime,
@@ -112,6 +137,7 @@ object StreamPlayback {
     fun pause() = command(StreamingAudioService.ACTION_PAUSE)
     fun resume() {
         requireMainThread()
+        if (mutableState.value.resolving) return
         BotRuntime.cancelPendingPlayback()
         command(StreamingAudioService.ACTION_RESUME)
     }

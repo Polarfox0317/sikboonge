@@ -44,8 +44,7 @@ fun filterBot(
     return sortItems(matches, query.sortKey, query.ascending, BotVideo::displayName) { it.date * 1_000L }
 }
 
-private fun normalizedName(value: String): String =
-    Normalizer.normalize(value, Normalizer.Form.NFC).lowercase(Locale.ROOT)
+private fun normalizedName(value: String): String = HangulSearch.normalize(value)
 
 private fun searchTerms(value: String): List<String> =
     normalizedName(value).trim().split(Regex("[\\s\\p{Z}]+")).filter(String::isNotEmpty)
@@ -56,9 +55,9 @@ internal fun matchesTextTerms(title: String, tags: List<String>, text: String): 
     return searchTerms(text).all { term ->
         if (term.startsWith('#') && term.drop(1).isNotEmpty()) {
             val tagTerm = term.drop(1)
-            tagKeys.any { it.contains(tagTerm) }
+            tagKeys.any { HangulSearch.matches(it, tagTerm) }
         } else {
-            normalizedTitle.contains(term) || tagKeys.any { it.contains(term) }
+            HangulSearch.matches(normalizedTitle, term) || tagKeys.any { HangulSearch.matches(it, term) }
         }
     }
 }

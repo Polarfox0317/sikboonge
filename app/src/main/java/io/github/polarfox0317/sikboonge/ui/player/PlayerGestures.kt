@@ -17,6 +17,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import io.github.polarfox0317.sikboonge.StreamingState
 import io.github.polarfox0317.sikboonge.PlaybackSource
@@ -25,10 +26,10 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 
-// app choice: retain the old distance before horizontal dismissal can stop playback.
-private val PlayerDismissDistance = 80.dp
+// app choice: use an 80dp travel threshold for player swipe actions.
+internal val PlayerDismissDistance = 80.dp
 // app choice: retain the old horizontal-dominance rule to avoid accidental dismissal.
-private const val PlayerDismissAxisRatio = 1.2f
+internal const val PlayerDismissAxisRatio = 1.2f
 // app choice: retain the old finger-follow opacity response.
 private const val PlayerDragFadeRatio = 0.55f
 // app choice: retain enough surface visibility while the finger is on it.
@@ -129,7 +130,9 @@ internal fun rememberPlayerSwipeModifier(
                 val delta = change.position - down.position
                 if (axis == 0) {
                     when {
-                        abs(delta.x) >= slop && abs(delta.x) >= abs(delta.y) * PlayerDismissAxisRatio -> axis = 1
+                        abs(delta.x) >= slop && abs(delta.x) >= abs(delta.y) * PlayerDismissAxisRatio -> {
+                            if (expanded) break else axis = 1
+                        }
                         abs(delta.y) >= slop && abs(delta.y) >= abs(delta.x) * PlayerDismissAxisRatio -> {
                             if (collapseAllowed && delta.y > 0f) axis = 2
                             else break
@@ -166,4 +169,151 @@ internal fun rememberPlayerSwipeModifier(
     }.semantics {
         customActions = listOf(CustomAccessibilityAction("재생 중지") { latestStop(); true })
     }
+}
+
+internal data class PlayerArtworkSwipeState(
+    val offsetX: State<Float>,
+    val neighbor: State<PlayerArtworkSwipeNeighbor?>,
+    val outgoing: State<PlayerArtworkSwipeNeighbor?>,
+    val modifier: Modifier,
+)
+
+internal data class PlayerArtworkSwipeNeighbor(
+    val artworkPath: String?,
+    val artworkBase64: String,
+    /** -1 is previous on the left; +1 is next on the right. */
+    val direction: Int,
+)
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+internal fun rememberPlayerArtworkSwipeState(
+    source: String,
+    expanded: Boolean,
+    canPrevious: Boolean,
+    canNext: Boolean,
+    surfaceWidth: Dp,
+    currentArtwork: PlayerArtworkSwipeNeighbor,
+    artworkForDirection: (direction: Int) -> PlayerArtworkSwipeNeighbor?,
+    onPlayPrevious: () -> Unit,
+    onPlayNext: () -> Unit,
+): PlayerArtworkSwipeState {
+    val latestCanPrevious by rememberUpdatedState(canPrevious)
+    val latestCanNext by rememberUpdatedState(canNext)
+    val latestPrevious by rememberUpdatedState(onPlayPrevious)
+    val latestNext by rememberUpdatedState(onPlayNext)
+    val latestCurrentArtwork by rememberUpdatedState(currentArtwork)
+    val latestArtworkForDirection by rememberUpdatedState(artworkForDirection)
+    val translation = remember { Animatable(0f) }
+    val neighbor = remember { mutableStateOf<PlayerArtworkSwipeNeighbor?>(null) }
+    val outgoing = remember { mutableStateOf<PlayerArtworkSwipeNeighbor?>(null) }
+    var dragging by remember { mutableStateOf(false) }
+    var dragX by remember { mutableFloatStateOf(0f) }
+    val offsetX = remember { derivedStateOf { if (dragging) dragX else translation.value } }
+    val spatial = MaterialTheme.motionScheme.defaultSpatialSpec<Float>()
+    // App choice: a completed swipe uses the fast spatial spec so it feels as immediate as a button press.
+    val fastSpatial = MaterialTheme.motionScheme.fastSpatialSpec<Float>()
+    val scope = rememberCoroutineScope()
+    var springJob by remember { mutableStateOf<Job?>(null) }
+    var completingSwipe by remember { mutableStateOf(false) }
+    val surfaceWidthPx = with(LocalDensity.current) { surfaceWidth.toPx() }
+    val latestSurfaceWidthPx by rememberUpdatedState(surfaceWidthPx)
+    LaunchedEffect(source, expanded) {
+        if (!completingSwipe) {
+            dragging = false
+            dragX = 0f
+            neighbor.value = null
+            outgoing.value = null
+            translation.snapTo(0f)
+        }
+    }
+    DisposableEffect(expanded) { onDispose { springJob?.cancel() } }
+    val gesture = Modifier.pointerInput(source, expanded) {
+        if (!expanded) return@pointerInput
+        val slop = viewConfiguration.touchSlop
+        val distance = PlayerDismissDistance.toPx()
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+            springJob?.cancel()
+            var axis = 0
+            var released = false
+            var cancelled = false
+            var offset = 0f
+            var previousAtDragStart: PlayerArtworkSwipeNeighbor? = null
+            var nextAtDragStart: PlayerArtworkSwipeNeighbor? = null
+            try {
+                while (true) {
+                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                    val delta = change.position - down.position
+                    if (axis == 0) {
+                        when {
+                            abs(delta.x) >= slop && abs(delta.x) >= abs(delta.y) * PlayerDismissAxisRatio -> axis = 1
+                            abs(delta.y) >= slop && abs(delta.y) >= abs(delta.x) * PlayerDismissAxisRatio -> break
+                        }
+                        if (axis == 1) {
+                            dragging = true
+                            offset = delta.x
+                            outgoing.value = latestCurrentArtwork
+                            previousAtDragStart = latestArtworkForDirection(-1)
+                            nextAtDragStart = latestArtworkForDirection(1)
+                        }
+                    } else {
+                        offset = delta.x
+                    }
+                    if (axis == 1) {
+                        change.consume()
+                        val enabled = if (offset < 0f) latestCanNext else latestCanPrevious
+                        dragX = offset * if (enabled) 1f else 0.3f // app choice: reduced travel signals there is no target.
+                        neighbor.value = when {
+                            offset < 0f && latestCanNext -> nextAtDragStart
+                            offset > 0f && latestCanPrevious -> previousAtDragStart
+                            else -> null
+                        }
+                    }
+                    if (!change.pressed) { released = true; break }
+                }
+            } catch (cancel: kotlinx.coroutines.CancellationException) {
+                cancelled = true
+                throw cancel
+            } finally {
+                if (axis == 1) {
+                    val finalOffset = offset
+                    val shouldAdvance = released && !cancelled && finalOffset <= -distance && latestCanNext
+                    val shouldGoBack = released && !cancelled && finalOffset >= distance && latestCanPrevious
+                    springJob = scope.launch {
+                        completingSwipe = shouldAdvance || shouldGoBack
+                        translation.snapTo(dragX)
+                        dragging = false
+                        dragX = 0f
+                        if (shouldAdvance || shouldGoBack) {
+                            val direction = if (shouldAdvance) -1f else 1f
+                            val target = direction * latestSurfaceWidthPx
+                            // Act on release, exactly like the buttons; the motion only follows it.
+                            if (shouldAdvance) latestNext() else latestPrevious()
+                            translation.animateTo(target, fastSpatial)
+                            translation.snapTo(0f)
+                            neighbor.value = null
+                            outgoing.value = null
+                            completingSwipe = false
+                        } else {
+                            translation.animateTo(0f, spatial)
+                            neighbor.value = null
+                            outgoing.value = null
+                        }
+                    }
+                }
+            }
+        }
+    }
+    val accessibility = if (expanded) Modifier.semantics {
+        val actions = buildList {
+            if (canPrevious) add(CustomAccessibilityAction("이전") { latestPrevious(); true })
+            if (canNext) add(CustomAccessibilityAction("다음") { latestNext(); true })
+        }
+        customActions = actions
+    } else Modifier
+    val modifier = gesture.then(Modifier.graphicsLayer { translationX = if (dragging) dragX else translation.value })
+        .then(accessibility)
+    return PlayerArtworkSwipeState(offsetX, neighbor, outgoing, modifier)
 }

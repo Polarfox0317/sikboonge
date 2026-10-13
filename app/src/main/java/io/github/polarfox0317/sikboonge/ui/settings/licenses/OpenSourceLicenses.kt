@@ -159,13 +159,15 @@ object OpenSourceLicenses {
             name = "AndroidX Media3",
             version = "1.9.3",
             licenseLabel = "Apache-2.0",
-            description = "오디오 재생, 미디어 세션과 재생 데이터 처리를 제공합니다.",
-            copyrightNotice = "AndroidX Media3 원저작자와 기여자의 권리를 유지합니다.",
+            description = "오디오 재생, 미디어 세션과 재생 데이터 처리를 제공합니다. 시스템 썸네일 처리를 위한 이벤트 전달 코드 일부를 가져와 수정했습니다.",
+            copyrightNotice = "AndroidX Media3 원저작자와 기여자의 권리를 유지합니다. 가져온 ForwardingListener 코드: Copyright 2021 The Android Open Source Project.",
             documents = listOf(
                 LicenseDocument("Apache License 2.0", assetPath = "Apache-2.0.txt"),
+                LicenseDocument("가져온 리스너 코드의 출처·수정 고지", assetPath = "notices/Media3-PortedCode.txt"),
             ),
             sources = listOf(
                 LicenseSource("Media3 1.9.3 소스", "https://github.com/androidx/media/tree/1.9.3"),
+                LicenseSource("ForwardingListener 원본", "https://github.com/androidx/media/blob/1.9.3/libraries/common/src/main/java/androidx/media3/common/ForwardingPlayer.java"),
             ),
             components = listOf(
                 "androidx.media3:media3-common:1.9.3",
@@ -660,6 +662,22 @@ object OpenSourceLicenses {
             ),
             sources = listOf(
                 LicenseSource("Material Icons 원본", "https://github.com/google/material-design-icons"),
+            ),
+        ),
+        OpenSourceLicense(
+            id = "es-hangul",
+            name = "es-hangul",
+            version = "Kotlin port · 920119b",
+            licenseLabel = "MIT",
+            description = "한글 초성 검색에 사용합니다.",
+            copyrightNotice = "Copyright (c) 2024 Viva Republica, Inc",
+            documents = listOf(
+                LicenseDocument("MIT License", assetPath = "es-hangul.txt"),
+                LicenseDocument("Kotlin 포팅 출처·수정 고지", assetPath = "notices/es-hangul-Port.txt"),
+            ),
+            sources = listOf(
+                LicenseSource("getChoseong 고정 원본", "https://github.com/toss/es-hangul/blob/920119b/src/core/getChoseong/getChoseong.ts"),
+                LicenseSource("es-hangul 저장소", "https://github.com/toss/es-hangul"),
             ),
         ),
     )
