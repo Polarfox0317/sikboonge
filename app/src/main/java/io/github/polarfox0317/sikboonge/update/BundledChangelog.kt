@@ -49,6 +49,13 @@ internal fun bundledChangelog(
         version = "1.1.2",
         releaseUrl = null,
     ).blocks
+    137L -> parseReleaseNotes(
+        body = CHANGELOG_1_1_3,
+        preferredLanguage = preferredLanguage,
+        releaseTitle = "싴붕이 1.1.3",
+        version = "1.1.3",
+        releaseUrl = null,
+    ).blocks
     else -> null
 }
 
@@ -237,4 +244,23 @@ private val CHANGELOG_1_1_2 = """
     ### Open-source licenses
 
     - Added license notices for es-hangul and AndroidX Media3.
+""".trimIndent()
+
+// Approved bilingual release notes. Keep category order and wording unchanged.
+private val CHANGELOG_1_1_3 = """
+    # 싴붕이 1.1.3
+
+    ## 한국어
+
+    ### 버그 수정
+
+    - 플레이어를 닫은 뒤 같은 항목을 추가하면 `이미 재생목록에 있어요`가 표시되던 문제를 수정했어요. 닫을 때 재생목록과 재개 상태도 초기화해요.
+    - 봇과 보관함의 이름 수정 입력창이 서로 다르던 문제를 수정했어요. 보관함과 같은 한 줄 입력·가로 스크롤 방식으로 통일했어요.
+
+    ## English
+
+    ### Bug fixes
+
+    - Fixed “Already in the queue” appearing when adding the same item after dismissing the player. Dismissing the player now also resets the queue and resume state.
+    - Unified the Bot and Library rename fields to use the Library’s single-line input and horizontal scrolling.
 """.trimIndent()
