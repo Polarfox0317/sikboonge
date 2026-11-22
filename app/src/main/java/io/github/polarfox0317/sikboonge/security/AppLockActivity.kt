@@ -9,6 +9,8 @@ import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.CoroutineStart
@@ -31,7 +33,14 @@ abstract class AppLockActivity : ComponentActivity() {
                 Intent.ACTION_CLOSE_SYSTEM_DIALOGS -> {
                     val reason = intent.getStringExtra("reason")
                     if (reason == "homekey" || reason == "recentapps") {
-                        appLockController.onUserLeftForBackground(force = true)
+                        // This signal can arrive after a Recents return has already resumed us;
+                        // acting on it would leave the session marked as backgrounded.
+                        if (AppLockBackgroundSignalPolicy.shouldInvalidateFromSystemDialogSignal(
+                                lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED),
+                            )
+                        ) {
+                            appLockController.onUserLeftForBackground(force = true)
+                        }
                     }
                 }
             }
@@ -64,6 +73,14 @@ abstract class AppLockActivity : ComponentActivity() {
                 appLockController.onCredentialTransferPossible(hostToken, generation)
             },
         ).also { appLockController.attachCoordinator(hostToken, it) }
+        // Lifecycle reaches RESUMED after Activity.onResume on current Android versions.
+        // Run reconciliation when the live state queried by the coordinator really is resumed.
+        lifecycle.addObserver(LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                appLockController.onHostResumed()
+                syncSecureWindow(appLockController.state.value.enabled)
+            }
+        })
         registerBackgroundSignals()
         syncSecureWindow(appLockController.state.value.enabled)
         lifecycleScope.launch(start = CoroutineStart.UNDISPATCHED) {
@@ -76,10 +93,13 @@ abstract class AppLockActivity : ComponentActivity() {
         super.onStart()
     }
 
-    override fun onResume() {
-        super.onResume()
-        appLockController.onHostResumed()
-        syncSecureWindow(appLockController.state.value.enabled)
+    /**
+     * A resumed Activity is not necessarily the focused window (a Recents return resumes before
+     * focus arrives), so the automatic prompt is released here instead of in onResume.
+     */
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        appLockController.onWindowFocusChanged(hasFocus)
     }
 
     override fun onStop() {
@@ -93,7 +113,7 @@ abstract class AppLockActivity : ComponentActivity() {
     }
 
     override fun onUserLeaveHint() {
-        appLockController.onUserLeftForBackground()
+        appLockController.onUserLeaveHint()
         super.onUserLeaveHint()
     }
 

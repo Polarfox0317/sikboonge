@@ -56,6 +56,14 @@ internal fun bundledChangelog(
         version = "1.1.3",
         releaseUrl = null,
     ).blocks
+    // The 1.1.4 builds share the final release notes.
+    149L, 150L, 151L, 152L, 153L, 154L, 155L -> parseReleaseNotes(
+        body = CHANGELOG_1_1_4,
+        preferredLanguage = preferredLanguage,
+        releaseTitle = "싴붕이 1.1.4",
+        version = "1.1.4",
+        releaseUrl = null,
+    ).blocks
     else -> null
 }
 
@@ -263,4 +271,52 @@ private val CHANGELOG_1_1_3 = """
 
     - Fixed “Already in the queue” appearing when adding the same item after dismissing the player. Dismissing the player now also resets the queue and resume state.
     - Unified the Bot and Library rename fields to use the Library’s single-line input and horizontal scrolling.
+""".trimIndent()
+
+// Approved bilingual release notes. Keep category order and wording unchanged.
+// The source-notice header stays outside this body: the parser only reads ## 한국어 / ## English.
+private val CHANGELOG_1_1_4 = """
+    ## 한국어
+
+    ### 버그 수정
+
+    - 최근 앱 화면에서 돌아온 뒤 잠금 해제 인증이 시작되지 않거나 재시도할 수 없던 문제를 수정했어요.
+
+    ### 재생목록과 이어듣기
+
+    - 일시정지한 뒤 앱을 다시 열면 재생목록과 저장 위치를 자동 재생 없이 미니 플레이어로 복원해요.
+    - 봇·보관함 목록에서 듣던 항목을 다시 선택하면, 이어서 재생하거나 처음부터 재생할 수 있어요.
+    - 플레이어와 재생목록에서 직접 재생할 때는 별도 질문 없이 저장된 위치부터 이어 들을 수 있어요.
+
+    ### 플레이어와 안내
+
+    - 미니·전체 플레이어에 재생 중 움직이고 일시정지하면 부드럽게 평평해지는 물결형 진행선을 적용했어요.
+    - 펼쳐진 플레이어에서 다른 탭으로 이동하면 미니 플레이어로 접히도록 변경했어요.
+    - 일회성 안내와 오류 메시지를 Android 시스템 토스트로 표시하도록 변경했어요.
+
+    ### 라이브러리와 라이선스
+
+    - 사용 라이브러리와 빌드 도구를 갱신하고, 라이선스와 대응 소스 안내를 업데이트했어요.
+
+    ## English
+
+    ### Bug fixes
+
+    - Fixed an issue where unlocking authentication would not start or could not be retried after returning from the recent apps screen.
+
+    ### Queue and resume playback
+
+    - After pausing, reopening the app restores the queue and saved position in the mini player without starting playback automatically.
+    - Selecting an unfinished item in the Bot or Library list lets you resume or start over.
+    - Playing directly from the player or queue resumes from the saved position without an additional prompt.
+
+    ### Player and feedback
+
+    - Added a shared wavy progress indicator to the mini and expanded players. It moves during playback and smoothly flattens when paused.
+    - Switching to another tab now collapses the expanded player.
+    - Transient notices and errors now appear as Android system toasts.
+
+    ### Libraries and licensing
+
+    - Updated libraries, build tools, license information, and corresponding-source notices.
 """.trimIndent()

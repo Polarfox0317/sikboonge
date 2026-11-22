@@ -9,19 +9,28 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class QueueOperationsTest {
-    @Test fun naturalEndAdvancesFromTheCurrentQueueKeyAndStopsAtTheFinalEntry() {
+    @Test fun naturalEndAdvancesFromTheCurrentEntryAndStopsAtTheFinalEntry() {
         val queue = listOf(item("first"), item("second"))
 
-        assertEquals(QueueNaturalEndAction.PlayNext(1), queueNaturalEndAction(queue, "first", true))
-        assertEquals(QueueNaturalEndAction.Stop, queueNaturalEndAction(queue, "second", true))
+        assertEquals(QueueNaturalEndAction.PlayNext(1), queueNaturalEndAction(queue, "entry-first", true))
+        assertEquals(QueueNaturalEndAction.Stop, queueNaturalEndAction(queue, "entry-second", true))
     }
 
     @Test fun naturalEndIgnoresMissingCurrentEntriesAndUnmatchedSources() {
         val queue = listOf(item("first"), item("second"))
 
         assertEquals(null, queueNaturalEndAction(queue, null, true))
-        assertEquals(null, queueNaturalEndAction(queue, "removed", true))
-        assertEquals(null, queueNaturalEndAction(queue, "first", false))
+        assertEquals(null, queueNaturalEndAction(queue, "entry-removed", true))
+        assertEquals(null, queueNaturalEndAction(queue, "entry-first", false))
+    }
+
+    // Two queued copies of one media: the ended occurrence decides, not the shared media key.
+    @Test fun naturalEndAdvancesPastADuplicateWithoutRewinding() {
+        val first = item("media")
+        val second = first.copy(entryId = "entry-duplicate")
+
+        assertEquals(QueueNaturalEndAction.PlayNext(1), queueNaturalEndAction(listOf(first, second), first.entryId, true))
+        assertEquals(QueueNaturalEndAction.Stop, queueNaturalEndAction(listOf(first, second), second.entryId, true))
     }
 
     @Test fun naturalEndEdgeIsHandledOnceUntilPlaybackLeavesEndedState() {
@@ -64,18 +73,28 @@ class QueueOperationsTest {
         assertEquals(1, playback.resumeIndex)
     }
 
-    @Test fun onlyExplicitAppendAddsAnEntryAndDuplicateAddsAreIgnored() {
-        val queue = listOf(item("first"))
-        val added = item("added")
+    // The user's rule: the same media may be queued again.
+    @Test fun appendingASecondCopyOfTheSameMediaAddsANewOccurrence() {
+        val first = item("media")
+        val queue = listOf(item("other"))
 
-        assertEquals(listOf(queue.single(), added), appendQueueEntry(queue, added))
+        val added = appendQueueEntry(queue, first)
+        val duplicate = first.copy(entryId = "entry-second-copy")
+
+        assertEquals(listOf(queue.single(), first), added)
+        assertEquals(listOf(queue.single(), first, duplicate), appendQueueEntry(added, duplicate))
+    }
+
+    @Test fun appendingTheSameOccurrenceTwiceDoesNotFork() {
+        val queue = listOf(item("first"))
+
         assertSame(queue, appendQueueEntry(queue, queue.single()))
     }
 
     @Test fun removingTheCurrentEntrySignalsStopAndPreservesTheNextAnchor() {
         val queue = listOf(item("first"), item("current"), item("last"))
 
-        val removed = removeQueueEntries(queue, index = 1, resumeIndex = 1, keys = setOf("current"))
+        val removed = removeQueueEntries(queue, index = 1, resumeIndex = 1, entryIds = setOf(queue[1].entryId))
 
         assertEquals(listOf(queue[0], queue[2]), removed.queue)
         assertEquals(-1, removed.index)
@@ -86,7 +105,7 @@ class QueueOperationsTest {
     @Test fun removingANoncurrentEntryKeepsTheCurrentEntryAndDoesNotSignalStop() {
         val queue = listOf(item("first"), item("current"), item("last"))
 
-        val removed = removeQueueEntries(queue, index = 1, resumeIndex = 1, keys = setOf("last"))
+        val removed = removeQueueEntries(queue, index = 1, resumeIndex = 1, entryIds = setOf(queue[2].entryId))
 
         assertEquals(listOf(queue[0], queue[1]), removed.queue)
         assertEquals(1, removed.index)
@@ -94,13 +113,28 @@ class QueueOperationsTest {
         assertFalse(removed.removedCurrent)
     }
 
-    @Test fun removingEveryEntrySignalsStopWhenTheCurrentEntryIsIncluded() {
-        val queue = listOf(item("first"), item("current"))
+    // Deleting one copy must leave the other copy of the same media playing.
+    @Test fun removingOneDuplicateKeepsTheOtherOccurrenceAndDoesNotSignalStop() {
+        val first = item("media")
+        val second = first.copy(entryId = "entry-second-copy")
 
-        val removed = removeQueueEntries(queue, index = 1, resumeIndex = 1, keys = queue.mapTo(mutableSetOf()) { it.key })
+        val removed = removeQueueEntries(listOf(first, second), index = 1, resumeIndex = 1, entryIds = setOf(first.entryId))
 
-        assertTrue(removed.queue.isEmpty())
-        assertTrue(removed.removedCurrent)
+        assertEquals(listOf(second), removed.queue)
+        assertEquals(0, removed.index)
+        assertFalse(removed.removedCurrent)
+    }
+
+    @Test fun movingADuplicateKeepsBothOccurrencesAndTheCurrentPointer() {
+        val first = item("media")
+        val second = first.copy(entryId = "entry-second-copy")
+        val queue = listOf(first, second, item("other"))
+
+        val moved = moveQueueEntry(queue, index = 1, resumeIndex = 1, from = 1, to = 2)
+
+        assertEquals(listOf(first, queue[2], second), moved.queue)
+        assertEquals(2, moved.index)
+        assertEquals(2, moved.resumeIndex)
     }
 
     private fun item(key: String) = QueueItemUi(
@@ -108,5 +142,6 @@ class QueueOperationsTest {
         title = key,
         sourceKind = PlaybackSource.LOCAL_AUDIO,
         localAudioPath = key,
+        entryId = "entry-$key",
     )
 }

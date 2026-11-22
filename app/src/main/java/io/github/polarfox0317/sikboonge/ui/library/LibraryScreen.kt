@@ -33,8 +33,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.semantics.semantics
 import io.github.polarfox0317.sikboonge.PlayerArtwork
 import io.github.polarfox0317.sikboonge.R
-import io.github.polarfox0317.sikboonge.TransientErrorBanner
-import io.github.polarfox0317.sikboonge.UserFacingErrors
 import io.github.polarfox0317.sikboonge.AudioResult
 import io.github.polarfox0317.sikboonge.LibraryDownload
 import io.github.polarfox0317.sikboonge.canonicalAudioPath
@@ -239,9 +237,8 @@ internal fun LibraryScreen(
                         )
                     }
                 }
-                if (current && state.stream.error != null) {
-                    TransientErrorBanner(state.stream.error, UserFacingErrors.Context.LOCAL_MEDIA, testTag = "localPlaybackError")
-                }
+                // The shell's messages.stream owns this playback error toast app-wide, so the
+                // library must not announce the same error a second time.
             }
                 }
             }

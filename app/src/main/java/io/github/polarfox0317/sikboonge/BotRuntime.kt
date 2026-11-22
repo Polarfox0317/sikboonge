@@ -32,6 +32,18 @@ internal class BotPlaybackRequestGeneration {
     fun isCurrent(requestGeneration: Long): Boolean = generation.get() == requestGeneration
 }
 
+/** How a playback reconnect request was handled, so the caller knows whether to wait on it. */
+internal enum class ReconnectStart {
+    /** A new attempt was claimed and started. */
+    STARTED,
+
+    /** An attempt was already running (reconnect or authentication); the request joined it. */
+    JOINED,
+
+    /** No reconnect can run now, for example while the account is being cleared. */
+    UNAVAILABLE,
+}
+
 /**
  * Staged native Bot API session. This is a bot-token MTProto client, not a user-phone login and not
  * the HTTP Bot API getFile path. Copy into app source only together with the integration notes.
@@ -680,6 +692,67 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
     }
 
     /** Refresh only the paired chat snapshot and known inbox rows; this never scans chat history. */
+    /**
+     * TDLib authentication, independent of the network connection: it stays true while the network
+     * drops, so a caller can tell "authenticated but offline" from "never connected".
+     */
+    internal fun isAuthenticated(): Boolean = ready
+
+    /** Whether a client was ever built; false means only a fresh connect from saved settings helps. */
+    internal fun hasClient(): Boolean = synchronized(lock) { client != null }
+
+    /** Whether a reconnect/authentication attempt is running right now. */
+    internal fun isReconnecting(): Boolean = synchronized(lock) {
+        reconnectInFlight || (mutableState.value.busy && client != null && authWatchdog?.isDone == false)
+    }
+
+    /**
+     * Starts the existing safe reconnect for an explicit playback retry, or joins the attempt that is
+     * already running. It never creates a second client or a second request.
+     *
+     * This deliberately does not go through [refreshInbox], which refuses to reconnect while the
+     * client is unauthenticated. The guard and generation mirror [refreshInbox] so duplicate requests
+     * join instead of racing; the existing lease and close protection is untouched. The caller
+     * observes [BotUiState] for the outcome and owns its own bounded wait, so no callback or polling
+     * lives here.
+     */
+    internal fun reconnectForPlayback(context: Context): ReconnectStart {
+        val app = context.applicationContext
+        appContext = app
+        val decision = synchronized(lock) {
+            val ui = mutableState.value
+            when {
+                ui.busy && client != null && authWatchdog?.isDone == false -> ReconnectStart.JOINED
+                reconnectInFlight -> ReconnectStart.JOINED
+                closingClearAccount -> ReconnectStart.UNAVAILABLE
+                else -> {
+                    // Claim the shared guard with the same generation bump refreshInbox uses, so any
+                    // concurrent reconnect observes that its attempt was superseded.
+                    reconnectInFlight = true
+                    reconnectRequestGeneration++
+                    ReconnectStart.STARTED
+                }
+            }
+        }
+        // Nothing is actually reconnecting when it is unavailable, so no progress state is published.
+        if (decision == ReconnectStart.UNAVAILABLE) return decision
+        publish {
+            copy(
+                busy = true,
+                connected = false,
+                needsReconnect = false,
+                status = "Telegram에 다시 연결하는 중",
+                receiveDiagnostic = "재생을 위해 저장된 봇 설정으로 Telegram에 다시 연결하고 있어요.",
+                error = null,
+                videos = synchronized(lock) { BotRuntime.videos.values.toList().ifEmpty { videos } },
+            )
+        }
+        if (decision == ReconnectStart.STARTED) {
+            io.execute { runCatching { reconnectForInboxRefresh(app) } }
+        }
+        return decision
+    }
+
     fun refreshInbox(context: Context) {
         val app = context.applicationContext
         appContext = app
@@ -1379,7 +1452,7 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
         return true
     }
 
-    fun play(context: Context, video: BotVideo) {
+    fun play(context: Context, video: BotVideo, startPositionMs: Long = 0L) {
         val requestGeneration = playbackRequestGeneration.issue()
         StreamPlayback.beginBotResolution(context, video)
         io.execute {
@@ -1397,7 +1470,7 @@ object BotRuntime : TdlibFileAccess, BotSavedFileAccess {
                 mainHandler.post {
                     if (!playbackRequestGeneration.isCurrent(requestGeneration)) return@post
                     if (ready && !isMessageBlocked(resolved.chatId, resolved.messageId)) {
-                        StreamPlayback.playBot(context, resolved)
+                        StreamPlayback.playBot(context, resolved, startPositionMs)
                     } else {
                         StreamPlayback.failBotResolution(video.fileId, "봇 연결이 변경되어 영상을 재생하지 못했어요. 다시 시도해 주세요.")
                     }

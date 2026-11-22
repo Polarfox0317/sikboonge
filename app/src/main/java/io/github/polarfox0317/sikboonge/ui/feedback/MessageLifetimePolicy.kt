@@ -1,7 +1,5 @@
 package io.github.polarfox0317.sikboonge.ui.feedback
 
-internal const val TRANSIENT_MESSAGE_TIMEOUT_MS = 3500L
-
 /** Message identity owns expiry; background job snapshots do not own dismissal. */
 internal class MessageLifetimePolicy {
     data class Message(val id: Long, val text: String, val persistent: Boolean)
@@ -17,14 +15,21 @@ internal class MessageLifetimePolicy {
         current = Message(++nextId, text, persistent)
     }
 
-    fun updateProgress(jobActive: Boolean, text: String) {
+    /**
+     * Returns the preparation text when it starts a new job episode, so a one-time notice is
+     * announced once per episode. Later percentage updates keep the same message and rearm only
+     * after the job goes inactive.
+     */
+    fun updateProgress(jobActive: Boolean, text: String): String? {
         if (!jobActive) {
             // Preparation can finish before the queued worker starts. Only rearm here.
             progressAnnounced = false
-        } else if (!progressAnnounced && text.isNotBlank()) {
-            show(text)
-            progressAnnounced = true
+            return null
         }
+        if (progressAnnounced || text.isBlank()) return null
+        show(text)
+        progressAnnounced = true
+        return text
     }
 
     fun dismiss(expectedId: Long? = null) {

@@ -1,5 +1,36 @@
 package io.github.polarfox0317.sikboonge.security
 
+/**
+ * Whether the automatic unlock prompt may start now. The system's biometric window needs both a
+ * resumed host and an actually focused Activity window: after a Recents return the host resumes
+ * before its window owns focus, and a prompt started in that gap attaches and detaches at once.
+ * The prompt is attempted only once per resume, so a focus change never re-triggers it.
+ */
+internal object AppLockAutoPromptGate {
+    fun shouldStart(
+        enabled: Boolean,
+        locked: Boolean,
+        deviceSecure: Boolean,
+        authenticating: Boolean,
+        hostResumed: Boolean,
+        windowFocused: Boolean,
+        alreadyAttempted: Boolean,
+    ): Boolean = enabled && locked && deviceSecure && !authenticating &&
+        hostResumed && windowFocused && !alreadyAttempted
+}
+
+/**
+ * The system's `CLOSE_SYSTEM_DIALOGS` home/recent signal can arrive after this Activity has already
+ * resumed (Recents return). Acting on it then clears the resumed session and makes the unlock
+ * button report "host unavailable", while the real leave is already observed by
+ * `onUserLeaveHint`/`onPause`/`onStop`. Only a signal for an Activity that is no longer resumed
+ * invalidates the session.
+ */
+internal object AppLockBackgroundSignalPolicy {
+    /** A resumed Activity already proves the user came back; a stale signal must be ignored. */
+    fun shouldInvalidateFromSystemDialogSignal(lifecycleResumed: Boolean): Boolean = !lifecycleResumed
+}
+
 /** State exposed to the app shell. Runtime unlock state is deliberately kept only in memory. */
 data class AppLockUiState(
     val enabled: Boolean = false,
@@ -7,6 +38,11 @@ data class AppLockUiState(
     val authenticating: Boolean = false,
     val deviceSecure: Boolean = false,
     val message: String? = null,
+    /**
+     * Identifies one lock-feedback event, so repeating the same failure text still announces again.
+     * Pure metadata: it carries no lock, authentication or lifecycle meaning.
+     */
+    val messageId: Long = 0L,
 )
 
 internal enum class AppLockAuthenticationPurpose { Unlock, Enable, Disable }
@@ -98,6 +134,11 @@ internal class AppLockSession(
         return true
     }
 
+    /** A user-selected task switch cancels speculative prompt handoff, but keeps an actual
+     * device-credential Activity result alive while that separate system Activity is showing. */
+    fun onUserLeaveHint(separateCredentialActivityStarted: Boolean): Boolean =
+        onUserLeftForBackground(force = !separateCredentialActivityStarted)
+
     /** Records platform results, but does not apply them until the host is resumed. */
     fun recordAuthenticationResult(generation: Long, succeeded: Boolean): Boolean {
         val request = activeRequest(generation) ?: return false
@@ -184,8 +225,8 @@ internal class AppLockSession(
         invalidateAuthentication(lockIfEnabled = true)
     }
 
-    fun setMessage(message: String?) {
-        state = state.copy(message = message)
+    fun setMessage(message: String?, id: Long = state.messageId) {
+        state = state.copy(message = message, messageId = id)
     }
 
     fun invalidateAuthentication(lockIfEnabled: Boolean = true) {

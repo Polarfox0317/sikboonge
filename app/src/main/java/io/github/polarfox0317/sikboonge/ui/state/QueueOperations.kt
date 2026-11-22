@@ -40,14 +40,20 @@ internal fun queueTransportAvailability(
     )
 }
 
-/** Returns null for stale/unmatched end events; the final row explicitly stops playback. */
+/**
+ * Returns null for stale/unmatched end events; the final row explicitly stops playback.
+ *
+ * [currentEntryId] names the exact occurrence that ended. Two queued copies of one media share a
+ * media key, so resolving by key could rewind the first row's next action instead of finishing the
+ * queue.
+ */
 internal fun queueNaturalEndAction(
     queue: List<QueueItemUi>,
-    currentKey: String?,
+    currentEntryId: String?,
     endedSourceMatchesCurrent: Boolean,
 ): QueueNaturalEndAction? {
-    if (!endedSourceMatchesCurrent || currentKey == null) return null
-    val index = queue.indexOfFirst { it.key == currentKey }
+    if (!endedSourceMatchesCurrent || currentEntryId == null) return null
+    val index = queue.indexOfFirst { it.entryId == currentEntryId }
     if (index !in queue.indices) return null
     val nextIndex = index + 1
     return if (nextIndex in queue.indices) QueueNaturalEndAction.PlayNext(nextIndex) else QueueNaturalEndAction.Stop
@@ -65,24 +71,29 @@ internal fun selectQueueEntry(queue: List<QueueItemUi>, index: Int): QueueMutati
     if (index in queue.indices) QueueMutation(queue, index, index)
     else QueueMutation(queue, -1, index.coerceIn(0, queue.size))
 
-/** The explicit Add to playlist action appends an item once. */
+/**
+ * The explicit Add to playlist action appends a new occurrence at the end, even when the same media
+ * is already queued. [item] must be a fresh occurrence; pass the existing row's [QueueItemUi.entryId]
+ * when re-resolving one so it does not fork.
+ */
 internal fun appendQueueEntry(queue: List<QueueItemUi>, item: QueueItemUi): List<QueueItemUi> =
-    if (queue.any { it.key == item.key }) queue else queue + item
+    if (queue.any { it.entryId == item.entryId }) queue else queue + item
 
-internal fun removeQueueEntries(queue: List<QueueItemUi>, index: Int, resumeIndex: Int, keys: Set<String>): QueueMutation {
-    val currentKey = queue.getOrNull(index)?.key
+/** Removes the exact occurrences in [entryIds]; a duplicate of the same media is a different entry. */
+internal fun removeQueueEntries(queue: List<QueueItemUi>, index: Int, resumeIndex: Int, entryIds: Set<String>): QueueMutation {
+    val currentEntryId = queue.getOrNull(index)?.entryId
     val anchor = if (index >= 0) index else resumeIndex.coerceIn(0, queue.size)
-    val retained = queue.filterNot { it.key in keys }
-    val nextAnchor = (anchor - queue.take(anchor).count { it.key in keys }).coerceIn(0, retained.size)
-    return QueueMutation(retained, retained.indexOfFirst { it.key == currentKey }, nextAnchor,
-        removedCurrent = currentKey != null && currentKey in keys)
+    val retained = queue.filterNot { it.entryId in entryIds }
+    val nextAnchor = (anchor - queue.take(anchor).count { it.entryId in entryIds }).coerceIn(0, retained.size)
+    return QueueMutation(retained, retained.indexOfFirst { it.entryId == currentEntryId }, nextAnchor,
+        removedCurrent = currentEntryId != null && currentEntryId in entryIds)
 }
 
 internal fun moveQueueEntry(queue: List<QueueItemUi>, index: Int, resumeIndex: Int, from: Int, to: Int): QueueMutation {
     if (from !in queue.indices || to !in queue.indices || from == to) return QueueMutation(queue, index, resumeIndex)
-    val currentKey = queue.getOrNull(index)?.key
-    val nextKey = queue.getOrNull(resumeIndex)?.key
+    val currentEntryId = queue.getOrNull(index)?.entryId
+    val nextEntryId = queue.getOrNull(resumeIndex)?.entryId
     val moved = queue.toMutableList().apply { add(to, removeAt(from)) }
-    val nextAnchor = nextKey?.let { key -> moved.indexOfFirst { it.key == key } } ?: moved.size
-    return QueueMutation(moved, moved.indexOfFirst { it.key == currentKey }, nextAnchor)
+    val nextAnchor = nextEntryId?.let { id -> moved.indexOfFirst { it.entryId == id } } ?: moved.size
+    return QueueMutation(moved, moved.indexOfFirst { it.entryId == currentEntryId }, nextAnchor)
 }

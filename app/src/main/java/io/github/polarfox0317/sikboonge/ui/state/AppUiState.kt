@@ -23,7 +23,15 @@ sealed interface SettingsPage {
     data class LicenseDetail(val id: String) : SettingsPage
 }
 
-/** A queue entry retains display metadata and stable playback identity. */
+/**
+ * A queue entry retains display metadata and stable playback identity.
+ *
+ * [key] is the **media key**: the same file or message always maps to the same key, and it owns the
+ * bookmark, the bot resolve and the real media deletion. A media may be queued more than once, so
+ * [entryId] is the **occurrence identity**: one distinct value per queue entry, preserved across
+ * moves, copies and a process restore. Selection, removal, current/resume pointers and list keys use
+ * [entryId]; only media lookups use [key].
+ */
 data class QueueItemUi(
     val key: String,
     val title: String,
@@ -33,11 +41,26 @@ data class QueueItemUi(
     val localAudioPath: String? = null,
     val botMessageId: Long? = null,
     val botChatId: Long? = null,
+    /** New occurrences get their own id; callers that re-resolve an existing row pass it explicitly. */
+    val entryId: String = java.util.UUID.randomUUID().toString(),
     val botFileId: Int? = null,
 )
 
-/** Product snapshots and interaction targets; list positions, menus and gestures belong to the UI. */
-data class AppUiState(
+/**
+ * The pending "continue or restart?" choice for one explicit play. It carries only stable identity
+ * and the saved offset; the actual play is re-derived when the user chooses, so a row deleted
+ * meanwhile cancels safely instead of starting stale media.
+ */
+data class ResumePrompt(
+    val key: String,
+    val title: String,
+    val positionMs: Long,
+    val durationMs: Long,
+    /** True when the item was played from the queue, so its queue and order must be preserved. */
+    val fromQueue: Boolean = false,
+)
+
+/** Product snapshots and interaction targets; list positions, menus and gestures belong to the UI. */data class AppUiState(
     val destination: Destination = Destination.Bot,
     val videoUri: String? = null,
     val videoName: String = "",
@@ -87,23 +110,72 @@ data class AppUiState(
     val queueEditing: Boolean = false,
     val queueSelectedKeys: Set<String> = emptySet(),
     val queueResumeIndex: Int = 0,
+    /**
+     * A separated paused session is displayed through this stopped shim so the player shows the
+     * paused entry (title, artwork, position) instead of live service state. Only a user press
+     * resumes it. [pausedEntryIndex] names the queue row the paused player resumes.
+     */
+    val pausedDisplay: StreamingState? = null,
+    val pausedEntryIndex: Int = -1,
+    /**
+     * An explicit play is waiting for the user to choose between continuing a saved position or
+     * starting over. Nothing is started until the choice is made.
+     */
+    val resumePrompt: ResumePrompt? = null,
 ) {
-    /** A presentation-only stopped selection; it never becomes a StreamPlayback service request. */
-    val playerPreview: QueueItemUi? get() = if (
-        stream.source == PlaybackSource.NONE && emptyPlayerVisible
-    ) queue.getOrNull(queueResumeIndex) ?: queue.firstOrNull() else null
+    /** A paused session is shown only when its shim names a queue row that still exists. */
+    private val separatedPause: Boolean
+        get() = pausedDisplay != null && isSeparatedPausedStream(stream) && pausedEntryIndex in queue.indices
 
-    val playerDisplayStream: StreamingState get() = playerPreview?.let { item ->
-        StreamingState(
-            source = item.sourceKind,
-            title = item.title,
-            ready = true,
-            botFileId = item.botFileId,
-            localAudioPath = item.localAudioPath,
-            artworkPath = item.artworkPath,
-            artworkBase64 = item.artworkBase64,
-        )
-    } ?: stream
+    /**
+     * A paused session is displayable only through a paused entry. Without one it must not fall
+     * back to the raw stream: a bare source would mislead or hide the player.
+     */
+    private val displayable: Boolean get() = !isSeparatedPausedStream(stream) || separatedPause
+
+    /** A presentation-only stopped selection; it never becomes a StreamPlayback service request. */
+    val playerPreview: QueueItemUi? get() = when {
+        separatedPause -> queue.getOrNull(pausedEntryIndex)
+        stream.source == PlaybackSource.NONE && emptyPlayerVisible ->
+            queue.getOrNull(queueResumeIndex) ?: queue.firstOrNull()
+        else -> null
+    }
+
+    val playerDisplayStream: StreamingState get() = when {
+        separatedPause -> pausedDisplay!!
+        !displayable -> StreamingState()
+        else -> playerPreview?.let { item ->
+            StreamingState(
+                source = item.sourceKind,
+                title = item.title,
+                ready = true,
+                botFileId = item.botFileId,
+                localAudioPath = item.localAudioPath,
+                artworkPath = item.artworkPath,
+                artworkBase64 = item.artworkBase64,
+            )
+        } ?: stream
+    }
+
+    /**
+     * Shared visibility rule for the shell and the player. Live or stopped sessions keep the
+     * previous condition; a paused session is visible only while a paused entry is displayed.
+     */
+    val playerVisible: Boolean
+        get() = when {
+            stream.source == PlaybackSource.NONE -> emptyPlayerVisible
+            isSeparatedPausedStream(stream) -> separatedPause
+            else -> stream.isPlayerVisible()
+        }
+
+    /** The queue entry the player resumes at; null when nothing is resumable. */
+    val resumableQueueIndex: Int
+        get() = when {
+            separatedPause -> pausedEntryIndex.takeIf { it in queue.indices } ?: -1
+            stream.source == PlaybackSource.NONE && emptyPlayerVisible ->
+                (queueResumeIndex.takeIf { it in queue.indices } ?: 0).takeIf { it in queue.indices } ?: -1
+            else -> -1
+        }
 
     val preparingBotSaveMessageId: Long? get() = preparingBotSaveSources.keys.firstOrNull()
     val preparingBotSaveMessageIds: Set<Long> get() = preparingBotSaveSources.keys

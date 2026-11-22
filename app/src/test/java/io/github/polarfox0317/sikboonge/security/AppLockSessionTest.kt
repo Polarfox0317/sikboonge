@@ -195,6 +195,40 @@ class AppLockSessionTest {
     }
 
     @Test
+    fun recentAppsLeaveCancelsSpeculativeCredentialHandoffAndAllowsRetry() {
+        val session = resumedSession(enabled = true)
+        val abandoned = requireNotNull(session.beginUnlock())
+        session.expectCredentialTransition(abandoned.generation)
+
+        assertTrue(session.onUserLeaveHint(separateCredentialActivityStarted = false))
+        assertNull(session.activeRequest(abandoned.generation))
+        assertTrue(session.state.locked)
+        assertFalse(session.state.authenticating)
+
+        session.takePendingResultAfterResume()
+        val retry = requireNotNull(session.beginUnlock())
+        assertTrue(retry.generation > abandoned.generation)
+        assertEquals(null, session.finishAuthentication(retry.generation, succeeded = false))
+        assertTrue(session.state.locked)
+        assertFalse(session.state.authenticating)
+
+        val finalRetry = requireNotNull(session.beginUnlock())
+        session.finishAuthentication(finalRetry.generation, succeeded = true)
+        assertFalse(session.state.locked)
+    }
+
+    @Test
+    fun separateCredentialActivityLeavePreservesItsPendingResult() {
+        val session = resumedSession(enabled = true)
+        val request = requireNotNull(session.beginUnlock())
+        session.expectCredentialTransition(request.generation)
+
+        assertFalse(session.onUserLeaveHint(separateCredentialActivityStarted = true))
+        assertEquals(request, session.activeRequest(request.generation))
+        assertTrue(session.state.authenticating)
+    }
+
+    @Test
     fun completedPendingCredentialResultRetainsGenerationAcrossConfigurationChange() {
         val session = resumedSession(enabled = false)
         val request = requireNotNull(session.beginEnabledChange(true))
@@ -232,4 +266,150 @@ class AppLockSessionTest {
         AppLockSession(enabled = enabled, deviceSecure = true).also {
             it.takePendingResultAfterResume()
         }
+}
+/**
+ * A Recents return resumes the host before its window owns focus; the automatic prompt may only
+ * start once focus is actually held, and only once.
+ */
+class AppLockAutoPromptGateTest {
+    private fun gate(
+        hostResumed: Boolean = true,
+        windowFocused: Boolean = false,
+        alreadyAttempted: Boolean = false,
+        authenticating: Boolean = false,
+    ) = AppLockAutoPromptGate.shouldStart(
+        enabled = true,
+        locked = true,
+        deviceSecure = true,
+        authenticating = authenticating,
+        hostResumed = hostResumed,
+        windowFocused = windowFocused,
+        alreadyAttempted = alreadyAttempted,
+    )
+
+    // The reported defect: resumed, but no window focus yet -> no prompt.
+    @Test fun doesNotStartWhenResumedWithoutWindowFocus() {
+        assertFalse(gate(hostResumed = true, windowFocused = false))
+    }
+
+    @Test fun startsWhenFocusLaterArrives() {
+        assertTrue(gate(hostResumed = true, windowFocused = true))
+    }
+
+    // Each focus arrival is one chance; a repeated notification must not reopen the prompt.
+    @Test fun startsOnlyOnce() {
+        assertTrue(gate(windowFocused = true, alreadyAttempted = false))
+        assertFalse(gate(windowFocused = true, alreadyAttempted = true))
+    }
+
+    // The ordinary cold start resumes with focus already held and still prompts.
+    @Test fun coldStartWithFocusPromptImmediately() {
+        assertTrue(gate(hostResumed = true, windowFocused = true, alreadyAttempted = false))
+    }
+
+    // Focus alone is never enough: the host must be resumed for the lifecycle.
+    @Test fun needsResumedHostAsWellAsFocus() {
+        assertFalse(gate(hostResumed = false, windowFocused = true))
+    }
+
+    // A prompt already running (or a button press in flight) is left alone, and the gate keeps
+    // the explicit-button path untouched because only this helper consults it.
+    @Test fun inFlightAuthenticationIsLeftAlone() {
+        assertFalse(gate(windowFocused = true, authenticating = true))
+    }
+}
+/**
+ * The automatic prompt is one attempt per resume. The system prompt takes window focus while it
+ * shows, so a blur/refocus pair inside one resume must not auto-trigger a second prompt.
+ */
+class AppLockAutoPromptLifecycleTest {
+    // Reports whether the controller may start the automatic prompt for the given focus history.
+    private class Attempts {
+        var windowFocused = false
+        private var attempted = false
+
+        fun resume() {
+            attempted = false
+        }
+
+        fun focus(hasFocus: Boolean): Boolean {
+            windowFocused = hasFocus
+            if (!hasFocus) return false
+            val start = AppLockAutoPromptGate.shouldStart(
+                enabled = true, locked = true, deviceSecure = true, authenticating = false,
+                hostResumed = true, windowFocused = windowFocused, alreadyAttempted = attempted,
+            )
+            if (start) attempted = true
+            return start
+        }
+    }
+
+    // The reported case: a resume takes a new attempt, and the first focus after it starts one.
+    @Test fun resumeWithoutFocusThenFirstFocusStartsOnePrompt() {
+        val attempts = Attempts()
+        attempts.resume()
+        assertTrue(attempts.focus(true))
+        assertFalse("a second focus in the same resume restarted it", attempts.focus(true))
+    }
+
+    // The biometric window takes focus, then returns it: no second automatic prompt.
+    @Test fun blurAndRefocusWithinOneResumeDoesNotRestart() {
+        val attempts = Attempts()
+        attempts.resume()
+        assertTrue(attempts.focus(true))
+        attempts.focus(false)
+        assertFalse("refocus after the prompt closed restarted it", attempts.focus(true))
+        // Even repeated prompt round trips inside one resume keep a single automatic attempt.
+        attempts.focus(false)
+        assertFalse(attempts.focus(true))
+    }
+
+    // A later resume is a new attempt, which the user may need after cancelling.
+    @Test fun nextResumeAllowsOneMoreAttempt() {
+        val attempts = Attempts()
+        attempts.resume()
+        assertTrue(attempts.focus(true))
+        assertFalse(attempts.focus(true))
+        attempts.resume()
+        assertTrue(attempts.focus(true))
+    }
+
+    // The explicit button path needs no window focus and is never gated.
+    @Test fun explicitUnlockUnaffectedByGate() {
+        val session = AppLockSession(enabled = true, deviceSecure = true).also {
+            it.takePendingResultAfterResume()
+        }
+        val request = requireNotNull(session.beginUnlock())
+        assertEquals(AppLockAuthenticationPurpose.Unlock, request.purpose)
+        assertTrue(session.state.authenticating)
+        // The automatic gate refuses this same state while unfocused, so the two paths differ.
+        assertFalse(AppLockAutoPromptGate.shouldStart(
+            enabled = true, locked = true, deviceSecure = true, authenticating = false,
+            hostResumed = true, windowFocused = false, alreadyAttempted = false,
+        ))
+    }
+}
+/**
+ * A stale home/recent broadcast after a Recents return must not invalidate the resumed session;
+ * a signal seen while the Activity is genuinely backgrounded still must.
+ */
+class AppLockBackgroundSignalPolicyTest {
+    // The verified race: broadcast lands after onResume -> ignore it, unlock stays available.
+    @Test fun staleSignalWhileResumedIsIgnored() {
+        assertFalse(AppLockBackgroundSignalPolicy.shouldInvalidateFromSystemDialogSignal(lifecycleResumed = true))
+    }
+
+    @Test fun signalWhileBackgroundedInvalidates() {
+        assertTrue(AppLockBackgroundSignalPolicy.shouldInvalidateFromSystemDialogSignal(lifecycleResumed = false))
+    }
+
+    // A genuine leave still invalidates through the controller's own background path.
+    @Test fun genuineUserLeaveStillInvalidates() {
+        val session = AppLockSession(enabled = true, deviceSecure = true).also {
+            it.takePendingResultAfterResume()
+        }
+        assertTrue(session.onUserLeftForBackground(force = true))
+        assertTrue(session.state.locked)
+        assertFalse(session.state.authenticating)
+    }
 }

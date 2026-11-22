@@ -55,7 +55,7 @@ internal fun PlayerQueueSheet(state: AppUiState, actions: AppActions) {
     fun finishDrag() { draggedKey = null; pendingMoveTo = null }
     fun moveAcrossNeighbor() {
         val key = draggedKey ?: return
-        val from = latestState.queue.indexOfFirst { it.key == key }
+        val from = latestState.queue.indexOfFirst { it.entryId == key }
         if (from < 0) { finishDrag(); return }
         pendingMoveTo?.let { if (from != it) return else pendingMoveTo = null }
         val draggedInfo = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == key } ?: return
@@ -113,23 +113,23 @@ internal fun PlayerQueueSheet(state: AppUiState, actions: AppActions) {
             TextButton(onClick = actions::onToggleQueueEditing) { Text(if (state.queueEditing) "완료" else "수정") }
         }
         LazyColumn(state = listState, modifier = Modifier.fillMaxWidth().weight(1f, fill = false)) {
-            itemsIndexed(state.queue, key = { _, item -> item.key }) { index, item ->
+            itemsIndexed(state.queue, key = { _, item -> item.entryId }) { index, item ->
                 val current = index == state.queueIndex
-                val dragging = draggedKey == item.key
+                val dragging = draggedKey == item.entryId
                 val colors = MaterialTheme.colorScheme
                 val rowShape = MaterialTheme.shapes.medium
-                var handleCoordinates by remember(item.key) { mutableStateOf<LayoutCoordinates?>(null) }
+                var handleCoordinates by remember(item.entryId) { mutableStateOf<LayoutCoordinates?>(null) }
                 val accessibilityMoves = if (state.queueEditing) buildList {
                     if (index > 0) add(CustomAccessibilityAction("위로 이동") { actions.onMoveQueueItem(index, index - 1); true })
                     if (index < state.queue.lastIndex) add(CustomAccessibilityAction("아래로 이동") { actions.onMoveQueueItem(index, index + 1); true })
                 } else emptyList()
                 ListItem(
-                    onClick = { if (state.queueEditing) actions.onToggleQueueSelection(item.key) else actions.onPlayQueueItem(index) },
+                    onClick = { if (state.queueEditing) actions.onToggleQueueSelection(item.entryId) else actions.onPlayQueueItem(index) },
                     modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)
                         .animateItem(fadeInSpec = effects, placementSpec = if (dragging) null else spatial, fadeOutSpec = effects)
                         .zIndex(if (dragging) 1f else 0f)
                         .graphicsLayer {
-                            val offset = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == item.key }?.offset
+                            val offset = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == item.entryId }?.offset
                             translationY = if (dragging && offset != null) dragTop - offset else 0f
                             shadowElevation = if (dragging) elevationPx else 0f
                             shape = rowShape
@@ -139,7 +139,7 @@ internal fun PlayerQueueSheet(state: AppUiState, actions: AppActions) {
                     leadingContent = {
                         Row(verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            if (state.queueEditing) Checkbox(checked = item.key in state.queueSelectedKeys, onCheckedChange = null)
+                            if (state.queueEditing) Checkbox(checked = item.entryId in state.queueSelectedKeys, onCheckedChange = null)
                             PlayerArtwork(item.artworkPath, item.artworkBase64,
                                 Modifier.size(40.dp).clip(rememberMediaArtworkShape(current && state.stream.playing)))
                         }
@@ -148,13 +148,13 @@ internal fun PlayerQueueSheet(state: AppUiState, actions: AppActions) {
                         Box(Modifier.size(48.dp)
                             .semantics { contentDescription = "순서 바꾸기"; customActions = accessibilityMoves }
                             .onGloballyPositioned { handleCoordinates = it }
-                            .pointerInput(item.key) {
+                            .pointerInput(item.entryId) {
                                 detectDragGestures(
                                     onDragStart = { start ->
                                         previousPointerY = handleCoordinates?.takeIf { it.isAttached }?.localToRoot(start)?.y ?: start.y
-                                        val info = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == item.key }
+                                        val info = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == item.entryId }
                                         if (info != null) {
-                                            draggedKey = item.key; dragTop = info.offset.toFloat()
+                                            draggedKey = item.entryId; dragTop = info.offset.toFloat()
                                             dragHeight = info.size.toFloat(); pendingMoveTo = null
                                         }
                                     },
@@ -162,7 +162,7 @@ internal fun PlayerQueueSheet(state: AppUiState, actions: AppActions) {
                                     onDragCancel = ::finishDrag,
                                     onDrag = { change, delta ->
                                         change.consume()
-                                        if (draggedKey == item.key) {
+                                        if (draggedKey == item.entryId) {
                                             // Root coordinates stay stable while the dragged row translates beneath the pointer.
                                             val pointerY = handleCoordinates?.takeIf { it.isAttached }?.localToRoot(change.position)?.y
                                             dragTop += if (pointerY != null) pointerY - previousPointerY else delta.y
