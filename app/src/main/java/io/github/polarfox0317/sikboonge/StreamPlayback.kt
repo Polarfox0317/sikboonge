@@ -19,11 +19,25 @@ data class StreamingState(
     val botFileId: Int? = null,
     val sourceBytes: Long = 0,
     val error: String? = null,
+    /**
+     * True only while this state comes from the internal Bot reconnect-and-replay wait, including the
+     * error that ends it. The player shows that error inline; toast collectors skip it, so the normal
+     * playback error toasts stay exactly as they are for everything else.
+     */
+    val suppressErrorToast: Boolean = false,
     val localAudioPath: String? = null,
     val ended: Boolean = false,
     val localAudioMime: String? = null,
     val artworkPath: String? = null,
     val artworkBase64: String = "",
+    /** Identifies the service that published this state; a new service starts at 1. */
+    val serviceGeneration: Int = 0,
+    /**
+     * The playback service that owned this source ended without a user close, so the item is a
+     * resumable paused session. The transport handles stay for the resume request; only this
+     * flag marks that no player is serving the source right now.
+     */
+    val serviceDetached: Boolean = false,
 )
 
 enum class PlaybackSource { NONE, BOT, LOCAL_AUDIO }
@@ -31,9 +45,20 @@ enum class PlaybackSource { NONE, BOT, LOCAL_AUDIO }
 object StreamPlayback {
     private val mutableState = MutableStateFlow(StreamingState())
     private var appContext: Context? = null
+    private var lastServiceGeneration = 0
     val state: StateFlow<StreamingState> = mutableState.asStateFlow()
 
-    fun playBot(context: Context, video: BotVideo) {
+    /** Called once by each newly created service; state from older services becomes stale. */
+    internal fun consumeServiceGeneration(): Int {
+        lastServiceGeneration += 1
+        return lastServiceGeneration
+    }
+
+    /** A generation that arrived after an explicit stop/close must not revive the player. */
+    internal fun isCurrentServiceGeneration(generation: Int): Boolean =
+        generation == lastServiceGeneration
+
+    fun playBot(context: Context, video: BotVideo, startPositionMs: Long = 0L) {
         requireMainThread()
         appContext = context.applicationContext
         mutableState.value = StreamingState(
@@ -52,7 +77,10 @@ object StreamPlayback {
             .putExtra(BotRuntime.EXTRA_TDLIB_NAME, video.displayName)
             .putExtra(BotRuntime.EXTRA_TDLIB_SIZE, video.bytes)
             .putExtra(StreamingAudioService.EXTRA_ARTWORK_PATH, video.thumbnailPath)
-            .putExtra(StreamingAudioService.EXTRA_ARTWORK_BASE64, video.thumbnailBase64))
+            .putExtra(StreamingAudioService.EXTRA_ARTWORK_BASE64, video.thumbnailBase64)
+            // A resume carries its position inside the start request; the service arms it before
+            // prepare, so it is never a follow-up seek on an unprepared player.
+            .apply { if (startPositionMs > 0L) putExtra(StreamingAudioService.EXTRA_POSITION, startPositionMs) })
     }
 
     /** Publish the selected identity while TDLib restores its file asynchronously. */
@@ -140,6 +168,34 @@ object StreamPlayback {
         if (mutableState.value.resolving) return
         BotRuntime.cancelPendingPlayback()
         command(StreamingAudioService.ACTION_RESUME)
+    }
+
+    /**
+     * A user resume of a paused session after the app stopped serving it. The request names the
+     * media itself, so it works in a fresh process where no service state survived. Nothing is
+     * published before the service answers; the identity is only used by the caller.
+     */
+    internal fun resumeRestored(context: Context, spec: StreamingAudioService.ResumeSpec, identity: StreamingState) {
+        requireMainThread()
+        BotRuntime.cancelPendingPlayback()
+        appContext = context.applicationContext
+        if (spec.botFileId != null) {
+            // The request carries the same identity the service re-opens (see beginBot).
+            mutableState.value = StreamingState(
+                source = PlaybackSource.BOT,
+                title = spec.title.orEmpty(),
+                resolving = true,
+                buffering = true,
+                botFileId = spec.botFileId,
+                sourceBytes = spec.botBytes,
+                artworkPath = spec.artworkPath,
+                artworkBase64 = spec.artworkBase64,
+            )
+        } else {
+            // A local play request publishes its own preparing state; keep the paused artwork.
+            mutableState.value = identity
+        }
+        context.startService(StreamingAudioService.resumeIntent(context, spec))
     }
     fun stop() {
         requireMainThread()

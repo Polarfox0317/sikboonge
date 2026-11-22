@@ -94,9 +94,9 @@ private fun botFieldKeyboardActions(imeAction: ImeAction, onImeAction: () -> Uni
 )
 
 @Composable
-internal fun BotStatus(bot: BotUiState) {
+internal fun BotStatus(bot: BotUiState, suppressErrorToast: Boolean = false) {
     Text("${bot.status}${bot.username?.let { " · @$it" }.orEmpty()}", style = MaterialTheme.typography.bodyMedium)
-    BotInlineStatus(bot)
+    BotInlineStatus(bot, suppressErrorToast)
 }
 
 internal fun botCanConnect(state: AppUiState): Boolean {

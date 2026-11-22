@@ -66,6 +66,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalLayoutDirection
@@ -91,10 +92,10 @@ import io.github.polarfox0317.sikboonge.ui.bot.BotScreen
 import io.github.polarfox0317.sikboonge.ui.bot.BotInboxSubtitle
 import io.github.polarfox0317.sikboonge.ui.components.SelectionToolbar
 import io.github.polarfox0317.sikboonge.ui.feedback.MessageController
-import io.github.polarfox0317.sikboonge.ui.feedback.MessageHost
 import io.github.polarfox0317.sikboonge.ui.library.LibraryScreen
 import io.github.polarfox0317.sikboonge.ui.convert.ConvertScreen
 import io.github.polarfox0317.sikboonge.ui.player.PlayerHost
+import io.github.polarfox0317.sikboonge.ui.player.ResumePlaybackDialog
 import io.github.polarfox0317.sikboonge.ui.state.AppActions
 import io.github.polarfox0317.sikboonge.ui.state.AppController
 import io.github.polarfox0317.sikboonge.ui.state.AppUiState
@@ -177,7 +178,7 @@ internal fun AppShell(
         if (tier == WindowTier.Expanded && expandedRailPreference) railState.expand()
         else railState.collapse()
     }
-    val playerVisible = state.emptyPlayerVisible || state.stream.isPlayerVisible()
+    val playerVisible = state.playerVisible
     val playerShown = playerVisible && state.destination != Destination.Settings
     val miniReserve = if (playerShown && !state.playerExpanded) MiniPlayerContentHeight else 0.dp
     val selectionReserve = if (state.selectionMode) SelectionToolbarContentHeight else 0.dp
@@ -407,35 +408,24 @@ internal fun AppShell(
                     miniBottomPadding = scaffoldPadding.calculateBottomPadding(),
                 )
             }
-            Column(
-                Modifier.align(Alignment.BottomCenter).padding(
-                    start = AppDimens.contentHorizontalPadding(tier),
-                    end = AppDimens.contentHorizontalPadding(tier),
-                    bottom = scaffoldPadding.calculateBottomPadding() + miniReserve + selectionReserve,
-                ),
-                verticalArrangement = Arrangement.spacedBy(AppDimens.itemSpacing),
-            ) {
-                if (messages.progress.current != null) {
-                    MessageHost(
-                        messages.progress,
-                        Modifier.testTag(if (messages.notice.current == null) "conversionFeedback" else "conversionProgressFeedback"),
-                    )
-                }
-                if (messages.notice.current != null) {
-                    MessageHost(messages.notice, Modifier.testTag("conversionFeedback"))
-                }
-                if (messages.stream.current != null) {
-                    MessageHost(messages.stream, Modifier.testTag("streamTransientError"))
-                }
-            }
         }
+    }
+    // An explicit play of an unfinished item waits here; back and outside tap cancel it safely.
+    state.resumePrompt?.let { prompt ->
+        ResumePlaybackDialog(
+            prompt = prompt,
+            onContinue = actions::onResumeFromBookmark,
+            onRestart = actions::onRestartFromBeginning,
+            onDismiss = actions::onDismissResumePrompt,
+        )
     }
     NavigationBackHandler(
         state = backState,
-        isBackEnabled = imeVisible || menuExpanded || state.selectionMode ||
+        isBackEnabled = state.resumePrompt != null || imeVisible || menuExpanded || state.selectionMode ||
             (playerShown && state.playerExpanded) || state.destination != Destination.Bot,
         onBackCompleted = {
             when {
+                state.resumePrompt != null -> actions.onDismissResumePrompt()
                 imeVisible -> { keyboard?.hide(); focusManager.clearFocus() }
                 menuExpanded -> menuExpanded = false
                 state.selectionMode -> actions.onClearSelection()
@@ -698,6 +688,8 @@ private class ShellMessages {
 private fun rememberShellMessages(controller: AppController, state: AppUiState): ShellMessages {
     val messages = remember(controller) { ShellMessages() }
     val owner = LocalLifecycleOwner.current
+    // One-time notices are raised as OS toasts, which need the foreground Activity for the call.
+    val context = LocalContext.current
     LaunchedEffect(controller, owner) {
         owner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             controller.messages.collect { message ->
@@ -711,22 +703,22 @@ private fun rememberShellMessages(controller: AppController, state: AppUiState):
                     message.isError && message.text == botError -> Unit // BotInlineStatus owns botTransientError.
                     message.isError && message.text == conversionError -> Unit
                     message.text == BOT_SAVE_PREPARATION_TEXT && snapshot.preparingBotSaveMessageIds.isNotEmpty() -> Unit
-                    else -> messages.notice.show(message.text, message.persistent)
+                    else -> messages.notice.show(message.text, message.persistent, context)
                 }
             }
         }
     }
     LaunchedEffect(state.stream.error, state.stream.localAudioPath, state.stream.botFileId) {
-        state.stream.safeError()?.let { messages.stream.show(it) } ?: messages.stream.dismiss()
+        state.stream.safeError()?.let { messages.stream.show(it, context = context) } ?: messages.stream.dismiss()
     }
     LaunchedEffect(state.conversion.error) {
-        UserFacingErrors.fromErrorString(state.conversion.error)?.let { messages.notice.show(it) }
+        UserFacingErrors.fromErrorString(state.conversion.error)?.let { messages.notice.show(it, context = context) }
     }
     LaunchedEffect(state.conversion.result?.path, state.conversion.stage == "취소했어요", state.conversion.running) {
         if (!state.conversion.running && state.conversion.error == null) {
             when {
-                state.conversion.result != null -> messages.notice.show(CONVERSION_COMPLETE_TEXT)
-                state.conversion.stage == "취소했어요" -> messages.notice.show(state.conversion.stage)
+                state.conversion.result != null -> messages.notice.show(CONVERSION_COMPLETE_TEXT, context = context)
+                state.conversion.stage == "취소했어요" -> messages.notice.show(state.conversion.stage, context = context)
             }
         }
     }
@@ -737,20 +729,19 @@ private fun rememberShellMessages(controller: AppController, state: AppUiState):
             state.conversion.stage.isNotBlank() -> state.conversion.stage
             else -> BOT_SAVE_PREPARATION_TEXT
         }
-        messages.progress.updateProgress(jobActive, text)
+        messages.progress.updateProgress(jobActive, text, context)
     }
     return messages
 }
 
-private fun StreamingState.safeError(): String? = UserFacingErrors.fromErrorString(error, when {
-    source == PlaybackSource.LOCAL_AUDIO -> UserFacingErrors.Context.LOCAL_MEDIA
-    source == PlaybackSource.BOT -> UserFacingErrors.Context.TELEGRAM
-    else -> UserFacingErrors.Context.GENERAL
-})
-
-private fun StreamingState.isPlayerVisible(): Boolean =
-    source != PlaybackSource.NONE &&
-        (resolving || ready || error != null || playing || buffering || localAudioPath != null)
+// The internal Bot reconnect-and-replay wait keeps its message inline in the player, never as a toast;
+// every other playback error keeps its existing toast.
+private fun StreamingState.safeError(): String? = if (suppressErrorToast) null else
+    UserFacingErrors.fromErrorString(error, when {
+        source == PlaybackSource.LOCAL_AUDIO -> UserFacingErrors.Context.LOCAL_MEDIA
+        source == PlaybackSource.BOT -> UserFacingErrors.Context.TELEGRAM
+        else -> UserFacingErrors.Context.GENERAL
+    })
 
 private fun SettingsPage.saveableKey(): String = when (this) {
     SettingsPage.Root -> "settings-root"

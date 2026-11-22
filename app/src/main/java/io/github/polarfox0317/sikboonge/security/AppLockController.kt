@@ -7,14 +7,21 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
-class AppLockController internal constructor(context: Context) : ViewModel() {
-    private val preferences = AppLockPreferences(context.applicationContext)
+class AppLockController internal constructor(
+    private val preferences: AppLockSettingsStore,
+    private val messageScope: CoroutineScope? = null,
+    private val logEvent: (String) -> Unit = { text ->
+        if (BuildConfig.DEBUG) Log.d("AppLock", text)
+    },
+) : ViewModel() {
+    internal constructor(context: Context) : this(AppLockPreferences(context.applicationContext))
     private val session = AppLockSession(
         enabled = preferences.isEnabled(),
         deviceSecure = false,
@@ -24,9 +31,15 @@ class AppLockController internal constructor(context: Context) : ViewModel() {
 
     private var hostGeneration = 0L
     private var coordinator: AppLockSystemAuthCoordinator? = null
-    private var hostResumed = false
+    private val hostResumed: Boolean get() = coordinator?.isHostResumed() == true
+    private val windowFocused: Boolean get() = coordinator?.hasWindowFocus() == true
+    private enum class ExplicitIntent { Unlock, Enable, Disable }
+    private var pendingExplicitIntent: ExplicitIntent? = null
     private var autoPromptAttempted = false
     private var stoppedDuringAuthentication = false
+    // A returning combined prompt may still deliver a valid PIN result. Keep its generation
+    // alive, but let an explicit button press replace it if the platform never calls back.
+    private var retryableRequestGeneration: Long? = null
     private var credentialActivityGeneration: Long? = null
     private var credentialTransferPossibleGeneration: Long? = null
     private var messageGeneration = 0L
@@ -38,21 +51,57 @@ class AppLockController internal constructor(context: Context) : ViewModel() {
             debugEvent("request_unchanged")
             return
         }
+        session.updateDeviceSecure(coordinator?.isDeviceSecure() == true)
         if (!session.state.deviceSecure) {
             debugEvent("request_device_insecure")
             showMessage("기기 화면 잠금을 설정한 뒤 사용할 수 있어요.")
             return
         }
-        startAuthentication(session.beginEnabledChange(enabled))
+        requestExplicitAuthentication(if (enabled) ExplicitIntent.Enable else ExplicitIntent.Disable)
     }
 
     fun unlock() {
         debugEvent("unlock")
+        session.updateDeviceSecure(coordinator?.isDeviceSecure() == true)
         if (!session.state.deviceSecure) {
             showMessage("기기 화면 잠금을 설정한 뒤 잠금을 해제할 수 있어요.")
             return
         }
-        startAuthentication(session.beginUnlock())
+        requestExplicitAuthentication(ExplicitIntent.Unlock)
+    }
+
+    private fun requestExplicitAuthentication(intent: ExplicitIntent) {
+        if (session.state.authenticating && retryableRequestGeneration != currentRequest?.generation) return
+        // Keep one user intent until the real Activity can host the prompt. Do not create an
+        // authentication generation in a transient pause/focus gap and immediately fail it.
+        pendingExplicitIntent = intent
+        startPendingExplicitAuthenticationIfReady()
+    }
+
+    private fun startPendingExplicitAuthenticationIfReady(): Boolean {
+        val intent = pendingExplicitIntent ?: return false
+        if (!hostResumed || !windowFocused) return false
+        drainPendingAuthenticationResultIfResumed()
+        val abandoned = currentRequest?.takeIf { it.generation == retryableRequestGeneration }
+        if (abandoned != null) {
+            coordinator?.cancelAuthentication()
+            session.finishAuthentication(abandoned.generation, succeeded = false)
+            currentRequest = null
+            credentialTransferPossibleGeneration = null
+            retryableRequestGeneration = null
+            debugEvent("abandoned_prompt_replaced", abandoned.generation)
+        }
+        if (session.state.authenticating) return false
+        pendingExplicitIntent = null
+        session.updateDeviceSecure(coordinator?.isDeviceSecure() == true)
+        drainPendingAuthenticationResultIfResumed()
+        val request = when (intent) {
+            ExplicitIntent.Unlock -> session.beginUnlock()
+            ExplicitIntent.Enable -> session.beginEnabledChange(true)
+            ExplicitIntent.Disable -> session.beginEnabledChange(false)
+        }
+        startAuthentication(request)
+        return true
     }
 
     fun openSecuritySettings() {
@@ -81,36 +130,74 @@ class AppLockController internal constructor(context: Context) : ViewModel() {
     internal fun onHostStarted() {
         debugEvent("start")
         syncPersistedSetting()
-        if (stoppedDuringAuthentication) {
-            stoppedDuringAuthentication = false
-        }
     }
 
     internal fun onHostResumed() {
-        hostResumed = true
         debugEvent("resume")
         syncPersistedSetting()
         session.updateDeviceSecure(coordinator?.isDeviceSecure() == true)
+        // Do not cancel a returning PIN prompt before its main-executor success callback arrives.
+        // If no callback ever arrives, expose the unlock button so the user can replace the
+        // orphaned generation explicitly. Automatic prompting must not replace this request.
+        val request = currentRequest
+        if (stoppedDuringAuthentication && request != null &&
+            credentialActivityGeneration != request.generation &&
+            !session.hasPendingAuthenticationResult(request.generation)
+        ) {
+            retryableRequestGeneration = request.generation
+            debugEvent("prompt_retry_available", request.generation)
+        }
+        stoppedDuringAuthentication = false
         drainPendingAuthenticationResultIfResumed()
         publish()
 
         debugEvent("resume_complete")
 
-        if (!session.state.enabled || !session.state.locked || !session.state.deviceSecure ||
-            session.state.authenticating || autoPromptAttempted
+        // Focus may have arrived before this resume; a fresh attempt belongs to this resume.
+        autoPromptAttempted = false
+        if (!startPendingExplicitAuthenticationIfReady()) startAutomaticUnlockIfReady()
+    }
+
+    /**
+     * The Activity window took or lost focus. After a Recents return the host is already resumed
+     * here, so this is where the automatic prompt becomes safe to start. Focus loss does not
+     * re-arm the attempt: the system prompt itself takes focus while showing, so re-arming on
+     * blur would start a second prompt when that prompt closes.
+     */
+    internal fun onWindowFocusChanged(hasFocus: Boolean) {
+        debugEvent("window_focus")
+        if (!hasFocus) return
+        drainPendingAuthenticationResultIfResumed()
+        publish()
+        if (!startPendingExplicitAuthenticationIfReady()) startAutomaticUnlockIfReady()
+    }
+
+    /** Starts the automatic unlock prompt only when the gate allows it; never on a button press. */
+    private fun startAutomaticUnlockIfReady() {
+        if (currentRequest != null) return
+        if (!AppLockAutoPromptGate.shouldStart(
+                enabled = session.state.enabled,
+                locked = session.state.locked,
+                deviceSecure = session.state.deviceSecure,
+                authenticating = session.state.authenticating,
+                hostResumed = hostResumed,
+                windowFocused = windowFocused,
+                alreadyAttempted = autoPromptAttempted,
+            )
         ) return
         autoPromptAttempted = true
-        startAuthentication(session.beginUnlock(), automatic = true)
+        startAuthentication(session.beginUnlock())
     }
 
     internal fun onHostPaused() {
-        hostResumed = false
+        pendingExplicitIntent = null
+        stoppedDuringAuthentication = currentRequest != null
         session.onHostPaused()
         debugEvent("pause")
     }
 
     internal fun onHostStopped(configurationChange: Boolean) {
-        hostResumed = false
+        pendingExplicitIntent = null
         val active = currentRequest?.let { session.activeRequest(it.generation) }
         val expectedSystemAuthTransition = session.isExpectedCredentialTransition(active?.generation)
         debugEvent("stop")
@@ -127,7 +214,7 @@ class AppLockController internal constructor(context: Context) : ViewModel() {
     }
 
     internal fun onScreenOff() {
-        hostResumed = false
+        pendingExplicitIntent = null
         debugEvent("screen_off")
         currentRequest = null
         credentialActivityGeneration = null
@@ -141,7 +228,22 @@ class AppLockController internal constructor(context: Context) : ViewModel() {
     internal fun onUserLeftForBackground(force: Boolean = false) {
         debugEvent(if (force) "leave_forced" else "leave_hint")
         if (!session.onUserLeftForBackground(force)) return
-        hostResumed = false
+        pendingExplicitIntent = null
+        currentRequest = null
+        credentialActivityGeneration = null
+        credentialTransferPossibleGeneration = null
+        coordinator?.cancelAuthentication()
+        autoPromptAttempted = false
+        publish()
+    }
+
+    internal fun onUserLeaveHint() {
+        val activeGeneration = currentRequest?.generation
+        val separateCredentialActivityStarted = activeGeneration != null &&
+            credentialActivityGeneration == activeGeneration
+        debugEvent(if (separateCredentialActivityStarted) "leave_credential_activity" else "leave_user_choice")
+        if (!session.onUserLeaveHint(separateCredentialActivityStarted)) return
+        pendingExplicitIntent = null
         currentRequest = null
         credentialActivityGeneration = null
         credentialTransferPossibleGeneration = null
@@ -153,7 +255,7 @@ class AppLockController internal constructor(context: Context) : ViewModel() {
     internal fun onHostDetached(owner: Long, configurationChange: Boolean): Boolean {
         if (owner != hostGeneration) return false
         coordinator = null
-        hostResumed = false
+        pendingExplicitIntent = null
         val requestGeneration = currentRequest?.generation
         val preserveCredentialResult = configurationChange && requestGeneration != null && (
             requestGeneration == credentialActivityGeneration ||
@@ -199,6 +301,7 @@ class AppLockController internal constructor(context: Context) : ViewModel() {
         }
         // The credential return can emit another stop/leave before resume. Keep its transport
         // and generation until the pending result is consumed or explicitly invalidated.
+        if (!hostResumed) session.onHostPaused()
         if (session.recordAuthenticationResult(generation, succeeded)) {
             debugEvent("result_deferred", generation, succeeded)
             // Recover a resumed-controller/paused-session mismatch without waiting for another resume.
@@ -224,12 +327,13 @@ class AppLockController internal constructor(context: Context) : ViewModel() {
         applyAuthenticationResult(pending.request, pending.succeeded)
     }
 
-    private fun startAuthentication(request: AppLockAuthenticationRequest?, automatic: Boolean = false) {
+    private fun startAuthentication(request: AppLockAuthenticationRequest?) {
         if (request == null) {
             debugEvent("authenticate_rejected")
             return
         }
         currentRequest = request
+        retryableRequestGeneration = null
         autoPromptAttempted = true
         debugEvent("authenticate")
         clearMessage()
@@ -258,6 +362,7 @@ class AppLockController internal constructor(context: Context) : ViewModel() {
     }
 
     private fun applyAuthenticationResult(request: AppLockAuthenticationRequest, succeeded: Boolean) {
+        retryableRequestGeneration = null
         val stillSecure = coordinator?.isDeviceSecure() == true
         session.updateDeviceSecure(stillSecure)
         val accepted = succeeded && stillSecure
@@ -288,9 +393,10 @@ class AppLockController internal constructor(context: Context) : ViewModel() {
     private fun showMessage(value: String) {
         val generation = ++messageGeneration
         messageJob?.cancel()
-        session.setMessage(value)
+        // The generation doubles as the event id, so repeating the same text announces again.
+        session.setMessage(value, generation)
         publish()
-        messageJob = viewModelScope.launch {
+        messageJob = (messageScope ?: viewModelScope).launch {
             delay(MESSAGE_LIFETIME_MILLIS)
             if (generation == messageGeneration) {
                 session.setMessage(null)
@@ -319,13 +425,14 @@ class AppLockController internal constructor(context: Context) : ViewModel() {
     }
 
     private fun publish() {
-        mutableState.value = session.state
+        val retryable = currentRequest != null &&
+            currentRequest?.generation == retryableRequestGeneration
+        mutableState.value = if (retryable) session.state.copy(authenticating = false) else session.state
     }
 
     private fun debugEvent(event: String, generation: Long? = currentRequest?.generation, result: Boolean? = null) {
-        if (!BuildConfig.DEBUG) return
         val request = currentRequest?.takeIf { it.generation == generation }
-        Log.d("AppLock", "event=$event purpose=${request?.purpose} generation=$generation " +
+        logEvent("event=$event purpose=${request?.purpose} generation=$generation " +
             "hostResumed=$hostResumed pending=${session.hasPendingAuthenticationResult(generation)} " +
             "enabled=${session.state.enabled} authenticating=${session.state.authenticating} " +
             "deviceSecure=${session.state.deviceSecure} locked=${session.state.locked} result=$result")

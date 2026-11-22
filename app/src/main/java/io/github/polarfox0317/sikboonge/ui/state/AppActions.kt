@@ -70,8 +70,14 @@ interface AppActions {
     fun onPause()
     /** Replaces StreamPlaybackCard.onResume. */
     fun onResume()
-    /** Replaces StreamPlaybackCard.onStop. */
+    /** Replaces StreamPlaybackCard.onStop. Releases playback but keeps the queue and bookmarks. */
     fun onStop()
+    /** Continues the pending play from its saved position. */
+    fun onResumeFromBookmark() = Unit
+    /** Starts the pending play from the beginning. */
+    fun onRestartFromBeginning() = Unit
+    /** Dismisses the pending choice: back, outside tap, or a deleted target. */
+    fun onDismissResumePrompt() = Unit
     fun onPlayPrevious() = Unit
     fun onPlayNext() = Unit
     fun onPlayQueueItem(index: Int) = Unit

@@ -9,12 +9,16 @@ import android.provider.Settings
 import android.util.Log
 import io.github.polarfox0317.sikboonge.BuildConfig
 import androidx.activity.ComponentActivity
+import androidx.lifecycle.Lifecycle
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import android.hardware.biometrics.BiometricPrompt
 import android.hardware.biometrics.BiometricManager
 
 internal interface AppLockSystemAuthCoordinator {
+    /** Live host facts; lock/background signals must never mutate these. */
+    fun isHostResumed(): Boolean
+    fun hasWindowFocus(): Boolean
     fun isDeviceSecure(): Boolean
     fun authenticate(request: AppLockAuthenticationRequest)
     fun reattachCredentialActivity(generation: Long)
@@ -35,6 +39,11 @@ internal class AndroidSystemAuthCoordinator(
     private var biometricPrompt: BiometricPrompt? = null
     private var cancellationSignal: CancellationSignal? = null
     private var credentialActivityGeneration: Long? = null
+
+    override fun isHostResumed(): Boolean = !activity.isFinishing && !activity.isDestroyed &&
+        activity.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+
+    override fun hasWindowFocus(): Boolean = activity.hasWindowFocus()
 
     override fun isDeviceSecure(): Boolean = keyguard.isDeviceSecure
 
@@ -101,6 +110,7 @@ internal class AndroidSystemAuthCoordinator(
 
     override fun reattachCredentialActivity(generation: Long) {
         activeGeneration = generation
+        credentialActivityGeneration = generation
         debugEvent("credential_reattached", generation)
     }
 
@@ -126,7 +136,7 @@ internal class AndroidSystemAuthCoordinator(
 
     fun onCredentialActivityResult(succeeded: Boolean) {
         debugEvent("credential_result", succeeded = succeeded)
-        val generation = activeGeneration ?: run {
+        val generation = credentialActivityGeneration?.takeIf { it == activeGeneration } ?: run {
             debugEvent("credential_result_ignored", succeeded = succeeded)
             return
         }

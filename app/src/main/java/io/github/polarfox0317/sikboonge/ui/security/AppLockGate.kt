@@ -46,6 +46,7 @@ import androidx.navigationevent.compose.NavigationBackHandler
 import androidx.navigationevent.compose.rememberNavigationEventState
 import io.github.polarfox0317.sikboonge.R
 import io.github.polarfox0317.sikboonge.security.AppLockController
+import io.github.polarfox0317.sikboonge.ui.feedback.AppToast
 import io.github.polarfox0317.sikboonge.ui.theme.AppDimens
 import io.github.polarfox0317.sikboonge.ui.theme.rememberWindowTier
 
@@ -71,6 +72,13 @@ internal fun AppLockGate(controller: AppLockController?, content: @Composable ()
             focus.clearFocus(force = true)
             keyboard?.hide()
         }
+    }
+    // One-time lock feedback is an OS toast. Keyed by the event id so repeating the same failure
+    // still announces again; a cleared message has a blank/null text and never toasts.
+    val feedbackContext = LocalContext.current
+    LaunchedEffect(state.messageId) {
+        val text = state.message?.takeIf { it.isNotBlank() } ?: return@LaunchedEffect
+        AppToast.show(feedbackContext, text)
     }
     NavigationBackHandler(
         state = back,
@@ -125,11 +133,8 @@ internal fun AppLockGate(controller: AppLockController?, content: @Composable ()
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 textAlign = TextAlign.Center,
                             )
-                            state.message?.takeIf { it.isNotBlank() }?.let {
-                                Text(it, style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    textAlign = TextAlign.Center)
-                            }
+                            // The one-time unlock feedback is announced by the OS toast instead of
+                            // an in-place line; the explanation above and the unlock button stay.
                         }
                         Column(
                             Modifier.fillMaxWidth().padding(top = AppDimens.sectionSpacing),

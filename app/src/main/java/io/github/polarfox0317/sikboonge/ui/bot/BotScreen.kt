@@ -21,8 +21,6 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.LoadingIndicator
@@ -44,6 +42,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -55,7 +54,6 @@ import androidx.compose.ui.unit.dp
 import io.github.polarfox0317.sikboonge.BotUiState
 import io.github.polarfox0317.sikboonge.BotVideoThumbnail
 import io.github.polarfox0317.sikboonge.R
-import io.github.polarfox0317.sikboonge.TRANSIENT_FEEDBACK_TIMEOUT_MS
 import io.github.polarfox0317.sikboonge.UserFacingErrors
 import io.github.polarfox0317.sikboonge.ui.components.ConfirmDeleteDialog
 import io.github.polarfox0317.sikboonge.ui.components.CenteredLoading
@@ -72,13 +70,13 @@ import io.github.polarfox0317.sikboonge.ui.components.SectionCard
 import io.github.polarfox0317.sikboonge.ui.components.ScrollJumpBubbles
 import io.github.polarfox0317.sikboonge.ui.state.AppActions
 import io.github.polarfox0317.sikboonge.ui.state.AppUiState
+import io.github.polarfox0317.sikboonge.ui.feedback.AppToast
 import io.github.polarfox0317.sikboonge.ui.state.hasActiveSave
 import io.github.polarfox0317.sikboonge.ui.state.Destination
 import io.github.polarfox0317.sikboonge.ui.state.ListLayout
 import io.github.polarfox0317.sikboonge.ui.state.ListQuery
 import io.github.polarfox0317.sikboonge.ui.theme.AppDimens
 import io.github.polarfox0317.sikboonge.ui.theme.WindowTier
-import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
@@ -194,7 +192,7 @@ private fun BotSetup(state: AppUiState, actions: AppActions, contentPadding: Pad
                     onImeAction = { if (canConnect) connectBot(state, actions) },
                     modifier = Modifier.fillMaxWidth().focusRequester(apiHashFocusRequester).testTag("botApiHash"),
                 )
-                BotStatus(bot)
+                BotStatus(bot, suppressErrorToast = state.stream.suppressErrorToast)
                 Button(
                     onClick = { connectBot(state, actions) },
                     enabled = canConnect,
@@ -431,19 +429,15 @@ private fun BotInbox(
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-internal fun BotInlineStatus(bot: BotUiState) {
+internal fun BotInlineStatus(bot: BotUiState, suppressErrorToast: Boolean = false) {
+    // The busy spinner is a persistent running state and stays inline.
     if (bot.busy) LoadingIndicator(Modifier.size(LoadingIndicatorDefaults.IndicatorSize))
+    // One-time bot errors go to the OS toast; the OS owns the timeout and accessibility timing.
+    // The internal Bot reconnect-and-replay wait never leaks its own error this way.
     val message = remember(bot.error) { UserFacingErrors.fromErrorString(bot.error, UserFacingErrors.Context.TELEGRAM) }
-    var errorVisible by remember { mutableStateOf(message != null) }
+    val context = LocalContext.current
     LaunchedEffect(message) {
-        errorVisible = message != null
-        if (message != null) { delay(TRANSIENT_FEEDBACK_TIMEOUT_MS); errorVisible = false }
-    }
-    if (errorVisible && message != null) {
-        Card(
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer, contentColor = MaterialTheme.colorScheme.onErrorContainer),
-            modifier = Modifier.fillMaxWidth().testTag("botTransientError"),
-        ) { Text(message, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(AppDimens.itemSpacing)) }
+        if (message != null && !suppressErrorToast) AppToast.show(context, message)
     }
 }
 

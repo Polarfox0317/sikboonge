@@ -3,6 +3,7 @@ package io.github.polarfox0317.sikboonge.ui.player
 import androidx.annotation.DrawableRes
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
@@ -20,11 +21,13 @@ import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import io.github.polarfox0317.sikboonge.PlayerArtwork
 import io.github.polarfox0317.sikboonge.R
@@ -46,15 +49,14 @@ private val MiniArtworkSize = 56.dp
 private val ExpandedArtworkSize = 240.dp
 // app choice: preserve room for transport in low-height windows.
 private val CompactArtworkSize = 88.dp
-// app choice: reserve extra height for a noninteractive progress line below the mini row.
-private val MiniPlayerProgressHeight = 4.dp
+// app choice: reserve extra height for a noninteractive progress line below the mini row. The line
+// uses the official wave envelope height so crests never clip, and keeps that height when flat.
+private val MiniPlayerProgressHeight = WavyProgressIndicatorDefaults.LinearContainerHeight
 private val MiniPlayerProgressBottomPadding = 6.dp
 private val MiniPlayerExtraHeight = 8.dp
 private val MiniPlayerHeight = MiniArtworkSize + AppDimens.itemSpacing * 2 + MiniPlayerExtraHeight
 // app choice: align the shared artwork after the standard accessible header action.
 private val PlayerHeaderHeight = 48.dp
-// app choice: the old slider closes its thumb/track gap.
-private val SeekThumbTrackGap = 0.dp
 
 /** The controller owns this preference; gestures and the shared visual transition stay here. */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
@@ -67,15 +69,16 @@ internal fun PlayerHost(
     miniBottomPadding: Dp = 0.dp,
 ) {
     val stream = state.stream
-    // Same source/active visibility gate as the old Activity, including local-source restoration.
-    val visible = state.emptyPlayerVisible || (stream.source != PlaybackSource.NONE &&
-        (stream.resolving || stream.ready || stream.error != null || stream.playing ||
-            stream.buffering || stream.localAudioPath != null))
+    // Same source/active visibility gate as the old Activity, including a paused session.
+    val visible = state.playerVisible
     if (!visible) {
         if (state.queueVisible) PlayerQueueSheet(state, actions)
         return
     }
     val displayStream = state.playerDisplayStream
+    // One shared wave for the expanded seek bar and the mini line, so switching between them never
+    // restarts the motion. It follows the authoritative playback state, including remote pauses.
+    val waveMotion = rememberPlayerWaveMotion(state.stream.playing)
     val timelineBounds = remember { mutableStateOf<Rect?>(null) }
     val collapseBounds = remember { mutableStateOf<Rect?>(null) }
     val collapseScrollBounds = remember { mutableStateOf<Rect?>(null) }
@@ -198,7 +201,7 @@ internal fun PlayerHost(
                     )) {
                         if (expanded) {
                             ExpandedPlayer(
-                                state.copy(stream = displayStream), actions, compact,
+                                state.copy(stream = displayStream), actions, waveMotion, compact,
                                 if (compact) CompactArtworkSize else ExpandedArtworkSize.coerceAtMost(expandedArtworkMaxWidth),
                                 timelineBounds,
                                 collapseBounds = collapseBounds,
@@ -210,7 +213,7 @@ internal fun PlayerHost(
                                 isPreview = state.playerPreview != null,
                             )
                         } else {
-                            MiniPlayer(displayStream, actions)
+                            MiniPlayer(displayStream, actions, waveMotion)
                         }
                     }
                 }
@@ -259,7 +262,7 @@ internal fun PlayerHost(
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun MiniPlayer(stream: StreamingState, actions: AppActions, modifier: Modifier = Modifier) {
+private fun MiniPlayer(stream: StreamingState, actions: AppActions, motion: PlayerWaveMotion, modifier: Modifier = Modifier) {
     val empty = stream.source == PlaybackSource.NONE
     Column(modifier.fillMaxSize()) {
         Row(
@@ -295,12 +298,29 @@ private fun MiniPlayer(stream: StreamingState, actions: AppActions, modifier: Mo
             .padding(bottom = MiniPlayerProgressBottomPadding).height(MiniPlayerProgressHeight)
             .clearAndSetSemantics { }) {
             if (stream.ready && stream.durationMs > 0L) {
-                LinearProgressIndicator(
-                    progress = { playerPosition(stream).toFloat() / stream.durationMs.toFloat() },
-                    modifier = Modifier.fillMaxWidth().clearAndSetSemantics { },
-                    color = MaterialTheme.colorScheme.primary,
-                    drawStopIndicator = {},
-                )
+                // The same shared wave as the expanded seek bar, on the official wave envelope
+                // height. The slot is a fixed height in both states, so pausing never reflows it.
+                val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+                val active = MaterialTheme.colorScheme.primary
+                val track = MaterialTheme.colorScheme.surfaceVariant
+                val geometry = rememberPlayerWaveGeometry()
+                // Resolved in the composable: dp -> px needs the density scope, not the draw scope.
+                val trackGapPx = with(LocalDensity.current) { geometry.trackGap.toPx() }
+                Canvas(Modifier.fillMaxSize().clearAndSetSemantics { }) {
+                    // Read inside the draw lambda so animation frames only dirty drawing instead of
+                    // recomposing the whole mini player.
+                    drawPlaybackWave(
+                        progressFraction = playerPosition(stream).toFloat() / stream.durationMs.toFloat(),
+                        phase = motion.phase,
+                        amplitude = motion.amplitude.value,
+                        localScale = 1f,
+                        geometry = geometry,
+                        color = active,
+                        trackColor = track,
+                        rtl = rtl,
+                        trackGap = trackGapPx,
+                    )
+                }
             }
         }
     }
@@ -311,6 +331,7 @@ private fun MiniPlayer(stream: StreamingState, actions: AppActions, modifier: Mo
 private fun ExpandedPlayer(
     state: AppUiState,
     actions: AppActions,
+    motion: PlayerWaveMotion,
     compact: Boolean,
     artworkSize: Dp,
     timelineBounds: MutableState<Rect?>,
@@ -352,7 +373,10 @@ private fun ExpandedPlayer(
     }
     val stream = state.stream
     val empty = stream.source == PlaybackSource.NONE
-    val canSave = !isPreview && stream.source == PlaybackSource.BOT
+    // Saving needs a real bot handle and a settled player. A restored paused session shows the
+    // saved title but has no file handle yet, so its save button must stay inactive rather than
+    // appearing enabled and silently doing nothing.
+    val canSave = !isPreview && stream.source == PlaybackSource.BOT && stream.botFileId != null
     val currentPlayerSourceKey = playerSourceKey(stream)
     val matchingBotDownload = state.downloads.firstOrNull { it.sourceBotFileId == stream.botFileId }
     val saving = state.preparingPlayerSaveSourceKey == currentPlayerSourceKey || matchingBotDownload != null
@@ -408,7 +432,7 @@ private fun ExpandedPlayer(
             }
         }
         // Keep seek and transport outside the scrollable artwork/title section in low windows.
-        if (stream.error == null && stream.ready) PlayerTimeline(stream, actions, timelineBounds)
+        if (stream.error == null && stream.ready) PlayerTimeline(stream, actions, motion, timelineBounds)
         if (!empty && stream.error == null && (stream.resolving || stream.buffering || !stream.ready)) {
             LoadingIndicator(modifier = Modifier.align(Alignment.CenterHorizontally)
                 .size(LoadingIndicatorDefaults.IndicatorSize).testTag("streamProgress"))
@@ -446,6 +470,7 @@ private fun ExpandedPlayer(
 private fun PlayerTimeline(
     stream: StreamingState,
     actions: AppActions,
+    motion: PlayerWaveMotion,
     timelineBounds: MutableState<Rect?>,
     modifier: Modifier = Modifier,
 ) {
@@ -473,7 +498,9 @@ private fun PlayerTimeline(
                 enabled = !stream.resolving,
                 modifier = Modifier.fillMaxWidth().testTag("streamSeek"),
                 track = { sliderState ->
-                    SliderDefaults.Track(sliderState = sliderState, thumbTrackGapSize = SeekThumbTrackGap)
+                    // The wave follows the shared motion. Dragging damps it locally through
+                    // `localScale` only, so the mini player's wave keeps running undisturbed.
+                    WavySeekTrack(state = sliderState, motion = motion, localScale = if (seeking) 0f else 1f)
                 },
             )
         }

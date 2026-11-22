@@ -22,37 +22,10 @@ import kotlinx.coroutines.delay
 
 internal const val TRANSIENT_FEEDBACK_TIMEOUT_MS = 5_000L
 
-@Composable
-internal fun TransientErrorBanner(
-    rawError: String?,
-    context: UserFacingErrors.Context = UserFacingErrors.Context.GENERAL,
-    modifier: Modifier = Modifier,
-    testTag: String = "transientError",
-    eventKey: Any? = rawError,
-) {
-    val message = remember(rawError, context) { UserFacingErrors.fromErrorString(rawError, context) }
-    var visible by remember { mutableStateOf(message != null) }
-    LaunchedEffect(message, eventKey) {
-        visible = message != null
-        if (message != null) {
-            delay(TRANSIENT_FEEDBACK_TIMEOUT_MS)
-            visible = false
-        }
-    }
-    if (visible && message != null) Surface(
-        color = MaterialTheme.colorScheme.errorContainer,
-        modifier = modifier.fillMaxWidth().testTag(testTag),
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(message, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium, maxLines = 3, overflow = TextOverflow.Ellipsis)
-        }
-    }
-}
-
+/**
+ * In-app transient notice that carries a user action. It stays on screen because the action must
+ * be reachable; callers without an action use [io.github.polarfox0317.sikboonge.ui.feedback.AppToast].
+ */
 @Composable
 internal fun TransientNoticeBanner(
     message: String,

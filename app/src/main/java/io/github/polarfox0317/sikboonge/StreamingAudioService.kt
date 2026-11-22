@@ -75,9 +75,17 @@ class StreamingAudioService : MediaSessionService() {
     private var botAccess: TdlibFileAccess = BotRuntime
     private var replacingMediaSource = false
     private var terminalShutdown = false
+    // Bumped by every new play request and by each STOP, so a queued teardown cannot outlive it.
+    private var stopGeneration = 0
+    // Nonzero for the first media start after a resume request; it is applied once on prepare.
+    private var pendingStartPositionMs = C.TIME_UNSET
+    private var appliedStartPositionMs = false
+    private var pendingStartLocalTitle: String? = null
+    private var currentServiceGeneration = 0
 
     override fun onCreate() {
         super.onCreate()
+        currentServiceGeneration = StreamPlayback.consumeServiceGeneration()
         initializePlaybackResources()
     }
 
@@ -158,22 +166,24 @@ class StreamingAudioService : MediaSessionService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         AppDiagnostics.event("playback", "action=${intent?.action.orEmpty()}")
         val baseResult = super.onStartCommand(intent, flags, startId)
+        // A new play (or an internal restart of one) invalidates any STOP teardown still queued.
+        when (intent?.action) {
+            ACTION_PLAY_LOCAL, BotRuntime.ACTION_PLAY_TDLIB, ACTION_RESUME, ACTION_SEEK -> stopGeneration++
+        }
         if (player == null) {
             when (intent?.action) {
                 ACTION_PLAY_LOCAL -> {
-                    val requestedPath = intent.getStringExtra(EXTRA_LOCAL_AUDIO_PATH)
-                    val active = StreamPlayback.state.value
-                    if (active.source != PlaybackSource.LOCAL_AUDIO || active.localAudioPath != requestedPath) {
-                        return START_NOT_STICKY
-                    }
+                    // A cold start resumes only the item this exact request names.
+                    if (!intent.acceptsColdStart()) return START_NOT_STICKY
                     initializePlaybackResources()
                 }
                 BotRuntime.ACTION_PLAY_TDLIB -> {
-                    val requestedFileId = intent.getIntExtra(BotRuntime.EXTRA_TDLIB_FILE_ID, 0)
-                    val active = StreamPlayback.state.value
-                    if (active.source != PlaybackSource.BOT || active.botFileId != requestedFileId) {
-                        return START_NOT_STICKY
-                    }
+                    if (!intent.acceptsColdStart()) return START_NOT_STICKY
+                    initializePlaybackResources()
+                }
+                ACTION_RESUME, ACTION_SEEK -> {
+                    // A restarted process may only re-open the item the request carries.
+                    if (!intent.acceptsColdStart()) return START_NOT_STICKY
                     initializePlaybackResources()
                 }
             }
@@ -183,7 +193,20 @@ class StreamingAudioService : MediaSessionService() {
             BotRuntime.ACTION_PLAY_TDLIB -> beginBot(intent)
             BotRuntime.ACTION_STOP_TDLIB -> if (currentBotFileId != null) stopPlayback()
             ACTION_PAUSE -> player?.pause()
-            ACTION_RESUME -> resumePlayback()
+            ACTION_RESUME -> {
+                // A restarted service keeps the requested position and local title until prepare.
+                intent.getLongExtra(EXTRA_POSITION, -1L).takeIf { it >= 0L }
+                    ?.let { pendingStartPositionMs = it }
+                intent.getStringExtra(EXTRA_LOCAL_AUDIO_TITLE)?.takeIf { it.isNotBlank() }
+                    ?.let { pendingStartLocalTitle = it }
+                val requestedBot = intent.getIntExtra(BotRuntime.EXTRA_TDLIB_FILE_ID, 0)
+                if (player != null && requestedBot > 0) {
+                    // A restarted process re-opens the bot item this request names.
+                    beginBot(intent)
+                } else {
+                    resumePlayback()
+                }
+            }
             ACTION_STOP -> stopPlayback()
             ACTION_SEEK -> player?.let { activePlayer ->
                 val requested = intent.getLongExtra(EXTRA_POSITION, 0L).coerceAtLeast(0L)
@@ -225,10 +248,25 @@ class StreamingAudioService : MediaSessionService() {
         } finally {
             replacingMediaSource = false
         }
+        armStartPosition(intent.positionExtraOrNull())
         startMedia(Uri.parse("tdlib://file/$fileId"))
     }
 
+    /** A request's own start position, or null for a fresh item that must begin at its start. */
+    private fun Intent.positionExtraOrNull(): Long? = StartPositionPolicy.fromRequest(getLongExtra(EXTRA_POSITION, -1L))
+
+    /**
+     * One media request owns one start position. A new request always replaces whatever the
+     * previous item left behind: [positionMs] when the request names one, otherwise none.
+     */
+    private fun armStartPosition(positionMs: Long?) {
+        pendingStartPositionMs = StartPositionPolicy.armedPosition(positionMs)
+        appliedStartPositionMs = false
+    }
+
     private fun beginLocalAudio(intent: Intent) {
+        // The request may name a start position; it never reuses the previous item's one.
+        armStartPosition(intent.positionExtraOrNull())
         val file = LocalPlaybackPolicy.ownedAudioFile(
             filesDir,
             intent.getStringExtra(EXTRA_LOCAL_AUDIO_PATH)
@@ -354,6 +392,9 @@ class StreamingAudioService : MediaSessionService() {
     private fun startMedia(mediaItemUri: Uri, mimeType: String? = null) {
         val activePlayer = player ?: return
         hasSelectedAudio = false
+        appliedStartPositionMs = false
+        pendingStartLocalTitle?.let { title -> if (currentLocalAudioPath != null) currentTitle = title }
+        pendingStartLocalTitle = null
         StreamPlayback.publish(StreamingState(
             source = if (currentBotFileId != null) PlaybackSource.BOT else PlaybackSource.LOCAL_AUDIO,
             title = currentTitle,
@@ -365,6 +406,7 @@ class StreamingAudioService : MediaSessionService() {
             localAudioMime = currentLocalAudioMime,
             artworkPath = currentArtworkPath,
             artworkBase64 = currentArtworkBase64,
+            serviceGeneration = currentServiceGeneration,
         ))
         val itemBuilder = MediaItem.Builder()
             .setUri(mediaItemUri)
@@ -381,34 +423,65 @@ class StreamingAudioService : MediaSessionService() {
         mainHandler.post(positionTicker)
     }
 
+    /**
+     * Resumes the current source. A live player just plays again (no needless seek); a service
+     * that has no player rebuilds the item it last served, starting where it stopped.
+     */
     private fun resumePlayback() {
-        val activePlayer = player ?: return
-        if (activePlayer.mediaItemCount > 0) {
-            if (activePlayer.playbackState == Player.STATE_ENDED) activePlayer.seekToDefaultPosition()
+        val activePlayer = player
+        if (activePlayer != null && activePlayer.mediaItemCount > 0) {
+            if (activePlayer.playbackState == Player.STATE_ENDED) {
+                activePlayer.seekToDefaultPosition()
+                appliedStartPositionMs = false
+            }
             activePlayer.play()
             schedulePositionTicker()
             return
         }
         val lastState = StreamPlayback.state.value
+        // A named start position wins; otherwise keep where playback stopped, unless it ended.
+        val resumePositionMs = StartPositionPolicy.fallbackResumeMs(
+            requestedMs = pendingStartPositionMs.takeIf { it != C.TIME_UNSET },
+            lastPositionMs = lastState.positionMs,
+            lastEnded = lastState.ended,
+        )
         if (lastState.botFileId != null) {
             beginBot(Intent().putExtra(BotRuntime.EXTRA_TDLIB_FILE_ID, lastState.botFileId)
-                .putExtra(BotRuntime.EXTRA_TDLIB_NAME, lastState.title)
+                .putExtra(BotRuntime.EXTRA_TDLIB_NAME, pendingStartLocalTitle ?: lastState.title)
                 .putExtra(BotRuntime.EXTRA_TDLIB_SIZE, lastState.sourceBytes)
                 .putExtra(EXTRA_ARTWORK_PATH, lastState.artworkPath)
-                .putExtra(EXTRA_ARTWORK_BASE64, lastState.artworkBase64))
+                .putExtra(EXTRA_ARTWORK_BASE64, lastState.artworkBase64)
+                .putExtra(EXTRA_POSITION, resumePositionMs ?: -1L))
             return
         }
         if (lastState.localAudioPath != null) {
+            pendingStartLocalTitle = pendingStartLocalTitle ?: lastState.title
             beginLocalAudio(Intent()
                 .putExtra(EXTRA_LOCAL_AUDIO_PATH, lastState.localAudioPath)
-                .putExtra(EXTRA_LOCAL_AUDIO_MIME, lastState.localAudioMime))
+                .putExtra(EXTRA_LOCAL_AUDIO_MIME, lastState.localAudioMime)
+                .putExtra(EXTRA_LOCAL_AUDIO_TITLE, pendingStartLocalTitle)
+                .putExtra(EXTRA_ARTWORK_PATH, lastState.artworkPath)
+                .putExtra(EXTRA_POSITION, resumePositionMs ?: -1L))
             return
         }
+    }
+
+    private fun applyPendingStartPosition(activePlayer: ExoPlayer) {
+        if (appliedStartPositionMs) return
+        val requested = pendingStartPositionMs
+        appliedStartPositionMs = true
+        pendingStartPositionMs = C.TIME_UNSET
+        if (requested == C.TIME_UNSET) return
+        val duration = activePlayer.duration.takeIf { it != C.TIME_UNSET && it > 0L }
+        if (duration != null && requested >= duration) return
+        activePlayer.seekTo(requested.coerceAtLeast(0L))
     }
 
     private fun stopPlayback() {
         if (terminalShutdown) return
         terminalShutdown = true
+        pendingStartPositionMs = C.TIME_UNSET
+        pendingStartLocalTitle = null
         BotRuntime.cancelPendingPlayback()
         clearSystemArtworkSource()
         currentBotFileId = null
@@ -525,6 +598,8 @@ class StreamingAudioService : MediaSessionService() {
             if (!ownsPublishedSource(StreamPlayback.state.value)) return
             val activePlayer = player ?: return
             if (playbackState == Player.STATE_READY || playbackState == Player.STATE_ENDED) {
+                // Apply the resume position before any state publication can report 0 ms.
+                if (playbackState == Player.STATE_READY) applyPendingStartPosition(activePlayer)
                 hasSelectedAudio = hasAudioTrack(activePlayer.currentTracks)
                 if (!hasSelectedAudio) {
                     fail("이 영상에는 오디오가 없어요.")
@@ -655,13 +730,27 @@ class StreamingAudioService : MediaSessionService() {
         }
 
         override fun play() {
+            // A platform play arrives through this forwarder, not only through onStartCommand, so it
+            // must also cancel a teardown still queued by an earlier STOP.
+            stopGeneration++
             if (player?.playbackState == Player.STATE_ENDED) player?.seekToDefaultPosition()
             super.play()
         }
 
         override fun stop() {
-            BotRuntime.cancelPendingPlayback()
-            stopPlayback()
+            // A system/media-button STOP is a terminal close, but it arrives inside Media3's own
+            // command dispatch (platformSession -> legacy stub). Releasing the MediaSession and the
+            // ExoPlayer synchronously here leaves that dispatch a null behind and crashes the main
+            // thread, so pause now and finish the teardown once the caller unwinds.
+            //
+            // The pending teardown is cancelled by any newer play request: a stop followed closely
+            // by a new play must leave the new session running.
+            player?.pause()
+            val generation = ++stopGeneration
+            mainHandler.post {
+                if (generation != stopGeneration) return@post
+                stopPlayback()
+            }
         }
 
         override fun seekToNextMediaItem() {
@@ -716,19 +805,39 @@ class StreamingAudioService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        // A teardown queued by this instance must not run against the next instance's player.
+        stopGeneration++
         val ownsActiveStream = !terminalShutdown && ownsPublishedSource(StreamPlayback.state.value)
         releasePlaybackResources()
         if (ownsActiveStream && ownsPublishedSource(StreamPlayback.state.value)) {
+            // Not a user close: keep the source, its handles and its position resumable.
             StreamPlayback.publish(StreamPlayback.state.value.copy(
                 resolving = false,
                 playing = false,
                 buffering = false,
-                ready = false
+                ready = false,
+                serviceDetached = true,
             ))
         }
         releaseBotLease()
         super.onDestroy()
     }
+
+    /**
+     * Everything a fresh process needs to rebuild one paused item: which media to open, the
+     * metadata to show and the position to start from. A resume of a restored session names
+     * its media instead of relying on state that did not survive the process.
+     */
+    internal data class ResumeSpec(
+        val positionMs: Long,
+        val localAudioPath: String? = null,
+        val mime: String? = null,
+        val title: String? = null,
+        val artworkPath: String? = null,
+        val artworkBase64: String = "",
+        val botFileId: Int? = null,
+        val botBytes: Long = 0L,
+    )
 
     companion object {
         internal const val ACTION_PLAY_LOCAL = "io.github.polarfox0317.sikboonge.stream.PLAY_LOCAL"
@@ -755,5 +864,37 @@ class StreamingAudioService : MediaSessionService() {
                 .putExtra(EXTRA_LOCAL_AUDIO_MIME, mime)
                 .putExtra(EXTRA_ARTWORK_PATH, artworkPath)
                 .putExtra(EXTRA_LOCAL_AUDIO_TITLE, title)
+
+        internal fun resumeIntent(context: Context, spec: ResumeSpec): Intent = Intent(context, StreamingAudioService::class.java)
+            .setAction(
+                when {
+                    spec.localAudioPath != null -> ACTION_PLAY_LOCAL
+                    spec.botFileId != null && spec.botFileId > 0 -> BotRuntime.ACTION_PLAY_TDLIB
+                    else -> ACTION_RESUME
+                },
+            )
+            .putExtra(EXTRA_POSITION, spec.positionMs.coerceAtLeast(0L))
+            .putStringExtraOrNull(EXTRA_LOCAL_AUDIO_PATH, spec.localAudioPath)
+            .putStringExtraOrNull(EXTRA_LOCAL_AUDIO_MIME, spec.mime)
+            .putStringExtraOrNull(EXTRA_LOCAL_AUDIO_TITLE, spec.title)
+            .putStringExtraOrNull(EXTRA_ARTWORK_PATH, spec.artworkPath)
+            .putExtra(EXTRA_ARTWORK_BASE64, spec.artworkBase64)
+            .putExtra(BotRuntime.EXTRA_TDLIB_FILE_ID, spec.botFileId ?: 0)
+            .putExtra(BotRuntime.EXTRA_TDLIB_NAME, spec.title.orEmpty())
+            .putExtra(BotRuntime.EXTRA_TDLIB_SIZE, spec.botBytes)
+
+        private fun Intent.putStringExtraOrNull(name: String, value: String?): Intent =
+            if (value == null) this else putExtra(name, value)
+
+        /**
+         * A request that re-opens media in a fresh process must name that media. Service-internal
+         * actions keep their historical in-process behavior and never re-open anything cold.
+         */
+        private fun Intent.acceptsColdStart(): Boolean = when (action) {
+            ACTION_PLAY_LOCAL -> getStringExtra(EXTRA_LOCAL_AUDIO_PATH) != null
+            BotRuntime.ACTION_PLAY_TDLIB -> getIntExtra(BotRuntime.EXTRA_TDLIB_FILE_ID, 0) > 0
+            else -> getStringExtra(EXTRA_LOCAL_AUDIO_PATH) != null ||
+                getIntExtra(BotRuntime.EXTRA_TDLIB_FILE_ID, 0) > 0
+        }
     }
 }

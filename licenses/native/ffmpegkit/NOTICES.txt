@@ -1,5 +1,5 @@
-FFmpegKit source archive: ffmpegkit-maintained/ffmpeg commit 12fd7ca207444e98015e7d24cd91c31abce34c31
-===== Original file: ffmpeg-12fd7ca207444e98015e7d24cd91c31abce34c31/LICENSE =====
+FFmpegKit source archive: ffmpegkit-maintained/ffmpeg commit 469e560b89a9ba4cab357d2c306c676b0c611745
+===== Original file: ffmpeg-469e560b89a9ba4cab357d2c306c676b0c611745/LICENSE =====
                    GNU LESSER GENERAL PUBLIC LICENSE
                        Version 3, 29 June 2007
 
